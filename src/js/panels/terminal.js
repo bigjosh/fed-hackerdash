@@ -574,6 +574,11 @@ HD.panel('terminal', (ctx) => {
     if (d && /LEWIS/.test(d.file || '')) batch.push(['[*] plaintext follows:', 'dim'], ...AD, ['[?] ...that is a recognition phrase. cover: LEWIS', 'dim']);
     react(batch);
   });
+  // someone's reflection just surfaced in the monitor glass (shell fx)
+  ctx.on('reflection', (d) => {
+    const line = (d && d.line) || '[?] reflection on glass';
+    react([[line, line === 'knock, knock.' ? 'br' : 'dim']]);
+  });
   ctx.on('voice:match', (d) => {
     const cf = d && d.confidence != null ? (d.confidence <= 1 ? d.confidence * 100 : d.confidence) : rand.range(90, 99);
     react([['[SIG] voiceprint MATCH ' + ((d && d.codename) || 'WRAITH') + ' conf ' + cf.toFixed(1) + '%', 'br']]);
@@ -837,6 +842,14 @@ HD.panel('terminal', (ctx) => {
         resumeAuto();
         return;
       }
+      case 'knock':
+        addLine('knock, knock.', 'br');
+        ctx.emit('ui:reflection', { source: 'terminal' });
+        break;
+      case 'rabbit':
+        addLine('> look up. check the glass ...', 'dim');
+        ctx.emit('ui:reflection', { source: 'terminal' });
+        break;
       case 'pete':
         addLine('...and pete. additional crew, 1992.', 'dim');
         addLine('that reel is sealed, agent.', 'br');

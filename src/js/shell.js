@@ -725,6 +725,155 @@
     bouncer.style.transform = `translate3d(${bx.toFixed(1)}px,${by.toFixed(1)}px,0)`;
   });
 
+  /* ---- the viewer's reflection: once a minute or so, the operator's own face (a rabbit) surfaces
+     in the monitor glass for ~2 s. Mirrored, lit only by the dashboard's glow, defocused, and added
+     to the screen the way glass adds light, so it shows over dark UI and vanishes over bright UI. */
+
+  const RABBIT = (HD.assets && HD.assets.rabbit) || '';
+  const rcv = $('#fx-reflect');
+  const rctx = rcv.getContext('2d');
+  const REF_MS = 2300;
+  const refEvery = parseFloat(HD.params.get('rabbit')); // test hook: ?rabbit=8 appears every ~8 s
+  let refSprite = null;
+  let refAt = 0;
+  let refNext = performance.now() + (refEvery > 0 ? refEvery * 1000 : R.int(22000, 36000));
+  let refLive = false;
+  let refTilt = 0;
+
+  function prepReflection(img) {
+    const h = Math.min(1200, img.naturalHeight);
+    const w = Math.round((img.naturalWidth * h) / img.naturalHeight);
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d');
+    // mirrored, slightly out of focus (glass is not a mirror), and lit only by the screen: the
+    // contrast push keeps the pale, screen-lit face bright while the room behind sinks into the dark
+    g.save();
+    g.translate(w, 0);
+    g.scale(-1, 1);
+    g.filter = 'contrast(1.75) brightness(1.02) blur(0.9px)';
+    g.drawImage(img, 0, 0, w, h);
+    g.restore();
+    g.filter = 'none';
+    // the dashboard's glow re-colours it: cool cyan above, phosphor green below, red nose still reads
+    g.globalCompositeOperation = 'color';
+    g.globalAlpha = 0.55;
+    const tint = g.createLinearGradient(0, 0, 0, h);
+    tint.addColorStop(0, '#a8f7ff');
+    tint.addColorStop(0.5, '#5ff3ff');
+    tint.addColorStop(1, '#3dff9a');
+    g.fillStyle = tint;
+    g.fillRect(0, 0, w, h);
+    g.globalAlpha = 1;
+    // an oval falloff around the head: whatever the screen does not light fades into the glass
+    g.globalCompositeOperation = 'destination-in';
+    g.save();
+    g.translate(w * 0.5, h * 0.4);
+    g.scale(1, (h / w) * 1.15);
+    const r = w * 0.58;
+    const vig = g.createRadialGradient(0, 0, r * 0.3, 0, 0, r);
+    vig.addColorStop(0, 'rgba(0,0,0,1)');
+    vig.addColorStop(0.55, 'rgba(0,0,0,0.8)');
+    vig.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = vig;
+    g.fillRect(-w, -h, w * 2, h * 2);
+    g.restore();
+    g.globalCompositeOperation = 'source-over';
+    refSprite = c;
+  }
+  if (RABBIT && !HD.solo) {
+    const img = new Image();
+    img.onload = () => prepReflection(img);
+    img.src = RABBIT;
+  }
+
+  function sizeReflect() {
+    rcv.width = innerWidth;
+    rcv.height = innerHeight;
+  }
+  sizeReflect();
+  addEventListener('resize', sizeReflect);
+
+  const REF_LINES = ['[?] reflection on glass · operator unidentified', '[?] motion behind the operator', 'knock, knock.'];
+  function camTag() {
+    const p = document.querySelector('[data-panel="face"]');
+    if (!p) return;
+    const d = U.el('div', 'fx-camtag');
+    d.append(U.el('b', '', 'OPERATOR CAM'), U.el('span', '', 'UNREGISTERED BIOMETRIC'), U.el('span', '', 'SPECIES: LAGOMORPH?'));
+    p.appendChild(d);
+    setTimeout(() => d.remove(), REF_MS + 500);
+  }
+
+  function reflectOk() {
+    return refSprite && !refLive && takeover.hidden && protocol.hidden && bouncer.hidden && !protoTimer && !M.zeroAt && !document.hidden;
+  }
+  function startReflection(now) {
+    refLive = true;
+    refAt = now;
+    refTilt = R.range(-0.012, 0.012);
+    rcv.hidden = false;
+    camTag();
+    HD.audio.chirp(140, 70, 900, 'sine', 0.012);
+    bus.emit('reflection', { line: R.pick(REF_LINES) });
+    if (R.chance(0.5)) bus.emit('alert', { level: 'info', msg: 'OPERATOR CAM · UNREGISTERED BIOMETRIC ON GLASS', source: 'P-11', panel: 'shell', time: Date.now() });
+  }
+  function endReflection(now) {
+    refLive = false;
+    rctx.clearRect(0, 0, rcv.width, rcv.height);
+    rcv.hidden = true;
+    refNext = now + (refEvery > 0 ? refEvery * 1000 : R.int(45000, 80000));
+  }
+  bus.on('ui:reflection', () => reflectOk() && startReflection(performance.now()));
+
+  HD.onFrame((now) => {
+    if (!refSprite) return;
+    if (!refLive) {
+      if (now >= refNext) {
+        if (reflectOk()) startReflection(now);
+        else refNext = now + 4000;
+      }
+      return;
+    }
+    const t = (now - refAt) / REF_MS;
+    if (t >= 1) return endReflection(now);
+    // surfaces slowly, lingers, then is gone as if the head moved out of the light
+    const env = t < 0.3 ? U.ease.inOutCubic(t / 0.3) : t > 0.66 ? 1 - U.ease.inOutCubic((t - 0.66) / 0.34) : 1;
+    const flick = HD.reducedMotion ? 1 : 0.9 + 0.1 * Math.sin(now * 0.041) * Math.sin(now * 0.013);
+    const W = rcv.width;
+    const H = rcv.height;
+    const g = rctx;
+    g.clearRect(0, 0, W, H);
+    const sh = H * 1.02;
+    const sw = sh * (refSprite.width / refSprite.height);
+    // parallax: the reflection drifts against the pointer, like a head moving in front of the screen
+    const mx = px > 0 ? px / W - 0.5 : 0;
+    const my = py > 0 ? py / H - 0.5 : 0;
+    const lean = HD.reducedMotion ? 0 : U.ease.outCubic(t);
+    const sc = 1 + 0.025 * lean;
+    const cx = W / 2 - mx * W * 0.05;
+    const top = H * 0.02 - my * H * 0.03 - lean * H * 0.012;
+    g.save();
+    g.translate(cx, top + (sh * sc) / 2);
+    g.rotate(refTilt * lean);
+    g.scale(sc, sc);
+    g.globalAlpha = 0.3 * env * flick;
+    g.drawImage(refSprite, -sw / 2, -sh / 2, sw, sh);
+    // the glass has two surfaces: a fainter second image, slightly offset
+    g.globalAlpha = 0.09 * env * flick;
+    g.drawImage(refSprite, -sw / 2 + 7, -sh / 2 + 4, sw, sh);
+    g.restore();
+    // a glare streak sweeps the glass as the face surfaces
+    const sx = U.lerp(-0.3, 1.3, t) * W;
+    const glare = g.createLinearGradient(sx - W * 0.12, 0, sx + W * 0.12, H * 0.35);
+    glare.addColorStop(0, 'rgba(200,245,255,0)');
+    glare.addColorStop(0.5, `rgba(200,245,255,${(0.07 * env).toFixed(3)})`);
+    glare.addColorStop(1, 'rgba(200,245,255,0)');
+    g.globalAlpha = 1;
+    g.fillStyle = glare;
+    g.fillRect(0, 0, W, H);
+  });
+
   if (FH) badge.hidden = false;
   if (!HD.solo) console.log('%cFEDLIGHT%c  built for fedhat · try ↑↑↓↓←→←→BA', 'font: 700 18px Michroma, sans-serif; color: #3dff7f; letter-spacing: .3em; text-shadow: 0 0 8px #3dff7f', 'color: #5d8793');
   HD.fedhead = {

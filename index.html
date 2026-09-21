@@ -14189,6 +14189,14 @@ HD.panel('terminal', (ctx) => {
     28: [[23, 23]],
   };
   const ORIGIN = { name: 'PARIS', cc: 'FR', lat: 48.8566, lon: 2.3522 };
+  // the proxy chain always bounces through Agent Fed's old haunts before locking on the origin
+  const ROUTE = [
+    { name: 'BUENOS AIRES', cc: 'AR', lat: -34.6037, lon: -58.3816 },
+    { name: 'PITTSBURGH', cc: 'PA', lat: 40.4406, lon: -79.9959 },
+    { name: 'BROOKLYN', cc: 'NY', lat: 40.6782, lon: -73.9442 },
+    { name: 'NYC SEAPORT', cc: 'NY', lat: 40.7066, lon: -74.0031 },
+    { name: 'SANTA MONICA', cc: 'CA', lat: 34.0195, lon: -118.4912 },
+  ];
   const D2R = Math.PI / 180;
 
   HD.panel('trace', (ctx) => {
@@ -14290,11 +14298,8 @@ HD.panel('terminal', (ctx) => {
     }
 
     function buildChain() {
-      const pool = rng.shuffle(ctx.words.cities);
-      const hops = rng.int(7, 9); // + PARIS = 8..10 rows
-      chain = [];
-      for (let i = 0; i < hops; i++) chain.push(mkHop(pool[i % pool.length], i));
-      chain.push(mkHop(ORIGIN, hops));
+      chain = ROUTE.map((c, i) => mkHop(c, i));
+      chain.push(mkHop(ORIGIN, ROUTE.length));
       N = chain.length;
       segs = [];
       for (let i = 1; i < N; i++) segs.push(slerp(chain[i - 1].vec, chain[i].vec, 22));
@@ -14313,20 +14318,13 @@ HD.panel('terminal', (ctx) => {
     }
 
     function reroute() {
-      // pick a new destination city for the current segment (never the final origin)
+      // the hop drops and is re-established on a fresh relay address, so the route stays on its named stops
       const idx = locked; // 0-based index being travelled to
       if (idx >= N - 1) return;
-      const used = new Set(chain.map((h) => h.name));
-      const cand = ctx.words.cities.filter((c) => !used.has(c.name));
-      if (!cand.length) return;
-      chain[idx] = mkHop(rng.pick(cand), idx);
-      segs[idx - 1] = slerp(chain[idx - 1].vec, chain[idx].vec, 22);
+      chain[idx] = mkHop(chain[idx], idx);
       arcT = 0;
-      targetYaw = -chain[idx].lon * D2R;
-      targetPitch = U.clamp(chain[idx].lat * D2R * 0.55, -0.42, 0.5);
-      buildRows();
       updateRows();
-      ctx.alert('warn', `HOP ${idx + 1} LOST — REROUTING VIA ${chain[idx].name}`);
+      ctx.alert('warn', `HOP ${idx + 1} LOST — RE-ESTABLISHING ${chain[idx].name} RELAY`);
     }
 
     function emitHop(i) {

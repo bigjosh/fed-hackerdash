@@ -455,6 +455,7 @@
 
   const upTitle = uplink.querySelector('.uplink-title');
   const upReply = $('#uplink-reply');
+  const upName = uplink.querySelector('.uplink-name');
   let seq = 0;
 
   function typeInto(el, text, done) {
@@ -486,6 +487,7 @@
     if (uplink.hidden) {
       upOpenAt = now;
       upCh.textContent = `CH-${U.pad(R.int(2, 48))}`;
+      U.scramble(upName, 'FEDHAT', { duration: 0 }); // a fresh call opens under his handle
       uplink.hidden = false;
       void uplink.offsetWidth; // restart the materialise animation
       placeUplink();
@@ -505,17 +507,19 @@
     return my;
   }
 
-  // Fed authenticates like it's 1997: his old personal ad is the challenge, the reply is the countersign.
+  // Fed authenticates like it's 1997: his old personal ad is the challenge, the reply is the countersign,
+  // and once it lands the caller shows his cover name.
   function countersign(after) {
-    const my = speak('Eyes like a puppy dog, lips made for sin.', true, {
+    const my = speak('Eyes like a puppydog\nlips made for sin', true, {
       title: 'SECURE UPLINK · CHALLENGE',
       hold: 6000,
       thenDelay: 700,
       then: () => {
         upReply.hidden = false;
-        typeInto(upReply, "You're not dreaming, I'm for real.", () => {
+        typeInto(upReply, 'You are not dreaming\nI am for real', () => {
           if (my !== seq) return;
           upTitle.textContent = 'VERIFIED · COVER ID LEWIS';
+          U.scramble(upName, 'LEWIS', { duration: 650 });
           uplink.classList.add('is-verified');
           HD.audio.beep(1320, 90, 'sine', 0.03);
           if (after) setTimeout(() => my === seq && speak(after, true, { title: 'SECURE UPLINK · LEWIS', verified: true }), 1900);

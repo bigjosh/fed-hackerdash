@@ -1,0 +1,150 @@
+/* P-13 event log — dense, newest-first, capped DOM list */
+
+[data-panel="alerts"] .al-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  container: al / size;
+  font: 500 11px/15px var(--f-mono);
+  background: linear-gradient(180deg, rgba(2, 5, 10, 0.25), rgba(2, 5, 10, 0.55));
+  --al-cols: 72px 30px 28px minmax(0, 1fr);
+}
+
+/* activity strip */
+[data-panel="alerts"] .al-strip {
+  flex: 0 0 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  border-bottom: 1px solid rgba(95, 243, 255, 0.14);
+  background: linear-gradient(90deg, rgba(95, 243, 255, 0.07), transparent 75%);
+}
+[data-panel="alerts"] .al-strip-lbl {
+  flex: 0 0 auto;
+  font: 600 9px/1 var(--f-ui);
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+}
+[data-panel="alerts"] .al-spark {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 11px;
+}
+[data-panel="alerts"] .al-eps {
+  flex: 0 0 auto;
+  min-width: 34px;
+  text-align: right;
+  font: 500 9.5px/1 var(--f-mono);
+  color: var(--ice);
+}
+
+/* column header (only when there is height to spare) */
+[data-panel="alerts"] .al-head {
+  display: none;
+  flex: 0 0 14px;
+  grid-template-columns: var(--al-cols);
+  column-gap: 5px;
+  align-items: center;
+  padding: 0 6px 0 6px;
+  font: 600 9px/14px var(--f-ui);
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+  border-bottom: 1px solid rgba(95, 243, 255, 0.08);
+}
+[data-panel="alerts"] .al-h { overflow: hidden; }
+
+/* rows */
+[data-panel="alerts"] .al-list {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 calc(100% - 12px), transparent);
+  mask-image: linear-gradient(#000 calc(100% - 12px), transparent);
+}
+[data-panel="alerts"] .al-row {
+  display: grid;
+  grid-template-columns: var(--al-cols);
+  column-gap: 5px;
+  align-items: center;
+  height: 15px;
+  padding: 0 6px 0 4px;
+  border-left: 2px solid rgba(95, 243, 255, 0.3);
+  border-bottom: 1px solid rgba(95, 243, 255, 0.05);
+  white-space: nowrap;
+}
+[data-panel="alerts"] .al-row.is-warn { border-left-color: var(--amber); }
+[data-panel="alerts"] .al-row.is-crit { border-left-color: var(--threat); background: rgba(255, 35, 64, 0.06); }
+
+[data-panel="alerts"] .al-t {
+  font: 500 10px/15px var(--f-mono);
+  color: var(--text-dim);
+  overflow: hidden;
+}
+[data-panel="alerts"] .al-t i { font-style: normal; }
+[data-panel="alerts"] .al-ms { opacity: 0.6; }
+
+[data-panel="alerts"] .al-sev {
+  display: block;
+  height: 11px;
+  font: 700 9px/9px var(--f-ui);
+  letter-spacing: 0.06em;
+  text-align: center;
+  padding-top: 1px;
+  color: var(--holo);
+  border: 1px solid rgba(95, 243, 255, 0.4);
+  background: rgba(95, 243, 255, 0.07);
+}
+[data-panel="alerts"] .is-warn .al-sev {
+  color: var(--amber);
+  border-color: rgba(255, 182, 39, 0.6);
+  background: rgba(255, 182, 39, 0.12);
+}
+[data-panel="alerts"] .is-crit .al-sev {
+  color: #fff;
+  border-color: var(--threat);
+  background: var(--threat);
+}
+
+[data-panel="alerts"] .al-src {
+  font: 500 9.5px/15px var(--f-mono);
+  color: var(--neon);
+  overflow: hidden;
+}
+[data-panel="alerts"] .is-amb .al-src { color: var(--text-dim); }
+
+[data-panel="alerts"] .al-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+[data-panel="alerts"] .is-warn .al-msg { color: var(--amber); }
+[data-panel="alerts"] .is-crit .al-msg { color: color-mix(in srgb, var(--threat) 55%, #fff); }
+
+/* narrow: drop the source column and the hours */
+@container al (max-width: 260px) {
+  [data-panel="alerts"] .al-src,
+  [data-panel="alerts"] .al-h-src,
+  [data-panel="alerts"] .al-hh { display: none; }
+  [data-panel="alerts"] .al-row,
+  [data-panel="alerts"] .al-head { --al-cols: 54px 30px minmax(0, 1fr); }
+}
+@container al (min-height: 180px) {
+  [data-panel="alerts"] .al-head { display: grid; }
+}
+
+/* intrusion glitch */
+[data-panel="alerts"] .al-root.is-glitch .al-list { animation: al-glitch 0.14s steps(2) 5; }
+@keyframes al-glitch {
+  0% { transform: translateX(2px); filter: hue-rotate(60deg) saturate(1.6); }
+  50% { transform: translateX(-2px); clip-path: inset(10% 0 30% 0); }
+  100% { transform: none; }
+}
+html.is-still [data-panel="alerts"] .al-root.is-glitch .al-list { animation: none; }

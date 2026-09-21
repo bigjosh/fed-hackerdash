@@ -1,0 +1,117 @@
+/* P-03 grid wipe countdown — frame escalation + the invisible abort hit area */
+
+[data-panel="countdown"] .cd-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+[data-panel="countdown"] .cd-hit:focus-visible {
+  outline: 1px solid var(--threat);
+  outline-offset: -3px;
+}
+[data-panel="countdown"] .cd-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* phase wash + scan sweep: compositor-only layers under the lit digits */
+[data-panel="countdown"] .cd-wash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse 80% 95% at 50% 50%, rgba(255, 35, 64, 0.05), rgba(255, 35, 64, 0.32));
+  will-change: opacity;
+}
+[data-panel="countdown"][data-cd-phase="critical"] .cd-wash { animation: cd-wash-breathe 1.6s ease-in-out infinite; }
+[data-panel="countdown"]:is([data-cd-phase="final"], [data-cd-phase="zero"]) .cd-wash {
+  background: rgba(255, 35, 64, 0.22);
+  animation: cd-wash-strobe 0.18s steps(2) infinite;
+}
+@keyframes cd-wash-breathe { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes cd-wash-strobe { 0% { opacity: 1; } 100% { opacity: 0.3; } }
+
+[data-panel="countdown"] .cd-scan {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+}
+[data-panel="countdown"] .cd-scan::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(255, 35, 64, 0) calc(100% - 28px), rgba(255, 35, 64, 0.11) calc(100% - 1px), rgba(255, 35, 64, 0.35));
+  transform: translateX(-100%);
+  animation: cd-scan 3s linear infinite;
+  will-change: transform;
+}
+@keyframes cd-scan {
+  0% { transform: translateX(-100%); }
+  72% { transform: translateX(0); }
+  72.01%, 100% { transform: translateX(100%); }
+}
+
+/* 720p: the header is too narrow for title + meta + barcode; drop the barcode */
+@container panel (max-width: 340px) {
+  [data-panel="countdown"] .panel-hd::after { display: none; }
+}
+
+/* escalation on the frame itself */
+[data-panel="countdown"][data-cd-phase="elevated"] .panel-meta { color: var(--amber); }
+[data-panel="countdown"][data-cd-phase="elevated"] .panel-led { background: var(--amber); box-shadow: 0 0 5px var(--amber); }
+[data-panel="countdown"][data-cd-phase="severe"] { --edge-c: rgba(255, 35, 64, 0.45); }
+[data-panel="countdown"]:is([data-cd-phase="severe"], [data-cd-phase="critical"], [data-cd-phase="final"], [data-cd-phase="zero"]) .panel-meta {
+  color: var(--threat);
+}
+[data-panel="countdown"]:is([data-cd-phase="severe"], [data-cd-phase="critical"], [data-cd-phase="final"], [data-cd-phase="zero"]) .panel-led {
+  background: var(--threat);
+  box-shadow: 0 0 6px var(--threat);
+  animation-duration: 0.9s;
+}
+[data-panel="countdown"]:is([data-cd-phase="critical"], [data-cd-phase="final"], [data-cd-phase="zero"]) .panel-hd {
+  background: linear-gradient(90deg, rgba(255, 35, 64, 0.22), rgba(255, 35, 64, 0.03) 60%, transparent);
+}
+[data-panel="countdown"][data-cd-phase="critical"] { --edge-c: rgba(255, 35, 64, 0.7); }
+[data-panel="countdown"][data-cd-phase="critical"]:not([data-flash]):not(.is-booting) {
+  animation: cd-breathe 1.6s ease-in-out infinite;
+}
+[data-panel="countdown"]:is([data-cd-phase="final"], [data-cd-phase="zero"]) { --edge-c: var(--threat); }
+[data-panel="countdown"]:is([data-cd-phase="final"], [data-cd-phase="zero"]):not([data-flash]):not(.is-booting) {
+  animation: cd-strobe 0.18s steps(2) infinite;
+}
+[data-panel="countdown"]:is([data-cd-phase="final"], [data-cd-phase="zero"]) .panel-led { animation-duration: 0.25s; }
+
+@keyframes cd-breathe {
+  0%, 100% { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 0 12px rgba(255, 35, 64, 0.05); }
+  50% { box-shadow: 0 0 26px rgba(255, 35, 64, 0.35), inset 0 0 30px rgba(255, 35, 64, 0.22); }
+}
+@keyframes cd-strobe {
+  0% { box-shadow: 0 0 0 1px var(--threat), 0 0 30px rgba(255, 35, 64, 0.6), inset 0 0 30px rgba(255, 35, 64, 0.3); }
+  100% { box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+}
+
+/* reduced motion: steady colour, no breathing or strobe */
+html.is-still [data-panel="countdown"],
+html.is-still [data-panel="countdown"] .panel-led,
+html.is-still [data-panel="countdown"] .cd-wash { animation: none !important; }
+html.is-still [data-panel="countdown"] .cd-scan { display: none; }
+html.is-still [data-panel="countdown"]:is([data-cd-phase="critical"], [data-cd-phase="final"], [data-cd-phase="zero"]) .cd-wash { opacity: 0.6; }
+html.is-still [data-panel="countdown"]:is([data-cd-phase="critical"], [data-cd-phase="final"], [data-cd-phase="zero"]) {
+  box-shadow: 0 0 20px rgba(255, 35, 64, 0.3), inset 0 0 24px rgba(255, 35, 64, 0.16);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-panel="countdown"], [data-panel="countdown"] .panel-led, [data-panel="countdown"] .cd-wash { animation: none !important; }
+  [data-panel="countdown"] .cd-scan { display: none; }
+}

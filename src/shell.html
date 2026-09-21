@@ -1,0 +1,188 @@
+<title>Fedlight Command Grid</title>
+<meta name="description" content="Operation Fedlight — a live interdiction console tracking target WRAITH across Paris.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Michroma&family=VT323&display=swap">
+<!--@STYLES-->
+<!--@BODY-->
+<div class="hd" id="hd">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <polygon points="20,8 31,14 31,26 20,32 9,26 9,14" fill="none" stroke="currentColor" stroke-width="0.75" opacity="0.5"/>
+        <path d="M9 20 Q20 10 31 20 Q20 30 9 20 Z" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="20" cy="20" r="4" fill="currentColor"/>
+      </svg>
+      <div class="brand-text">
+        <b>FEDLIGHT</b>
+        <small>NULLSEC · FED DIVISION</small>
+      </div>
+    </div>
+    <div class="chips" role="status" aria-live="off">
+      <span class="chip" id="chip-uplink"><i class="chip-dot"></i>UPLINK <b>SECURE</b></span>
+      <span class="chip" id="chip-sat">SAT LOCK <b>4/6</b></span>
+      <span class="chip" id="chip-target">TARGET <b>WRAITH</b></span>
+      <span class="chip chip-threat" id="chip-threat">THREAT <b>ELEVATED</b></span>
+      <span class="chip chip-cd" id="chip-cd">T&minus; <b>04:00</b></span>
+    </div>
+    <div class="clocks">
+      <button class="op-badge" id="op-badge" type="button" title="Open handler uplink" data-hot hidden>
+        <span class="fh-face op-face"><img data-fh alt=""></span>
+        <span class="op-text"><small>HANDLER</small><b>FEDHAT</b></span>
+        <i class="op-dot"></i>
+      </button>
+      <span class="clock">UTC <b id="clk-utc">--:--:--</b></span>
+      <span class="clock">PARIS <b id="clk-local">--:--:--</b></span>
+      <button class="tb-btn" id="btn-audio" type="button" aria-pressed="false" title="Toggle audio [M]">AUDIO <b>OFF</b></button>
+      <button class="tb-btn" id="btn-full" type="button" title="Fullscreen [F]">FULL</button>
+    </div>
+  </header>
+
+  <main class="grid" id="grid">
+    <section class="panel" data-panel="terminal" aria-label="Uplink shell">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-01</span><h2 class="panel-title">Uplink Shell</h2><span class="panel-meta" data-meta>tty/7 · root</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel panel-hero" data-panel="map" aria-label="Target tracking map">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-02</span><h2 class="panel-title">Gridtrack // Paris</h2><span class="panel-meta" data-meta>SAT KH-9 · 0.4 m/px</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel panel-urgent" data-panel="countdown" aria-label="Grid wipe countdown">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-03</span><h2 class="panel-title">Grid Wipe Countdown</h2><span class="panel-meta" data-meta>PAYLOAD ARMED</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="enhance" aria-label="Optic recon camera feed">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-04</span><h2 class="panel-title">Optic Recon</h2><span class="panel-meta" data-meta>CAM-0417 · LIVE</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="netgraph" aria-label="Network node mesh">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-05</span><h2 class="panel-title">Node Mesh</h2><span class="panel-meta" data-meta>0/0 OWNED</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="trace" aria-label="Proxy trace">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-06</span><h2 class="panel-title">Proxy Trace</h2><span class="panel-meta" data-meta>HOP 0/0</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="decrypt" aria-label="Cipher break">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-07</span><h2 class="panel-title">Cipher Break</h2><span class="panel-meta" data-meta>AES-4096-GCM</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="sysmon" aria-label="Core telemetry">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-08</span><h2 class="panel-title">Core Telemetry</h2><span class="panel-meta" data-meta>CLUSTER Ω</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="spectrum" aria-label="Signals intelligence voice intercept">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-09</span><h2 class="panel-title">Sigint // Voice</h2><span class="panel-meta" data-meta>437.225 MHz</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="radar" aria-label="Orbital sweep">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-10</span><h2 class="panel-title">Orbital Sweep</h2><span class="panel-meta" data-meta>0 CONTACTS</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="face" aria-label="Biometric match">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-11</span><h2 class="panel-title">Biometric</h2><span class="panel-meta" data-meta>SCANNING</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="dossier" aria-label="Target dossier">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-12</span><h2 class="panel-title">Target Dossier</h2><span class="panel-meta" data-meta>CLASS: BLACK</span></header>
+      <div class="panel-bd"></div>
+    </section>
+
+    <section class="panel" data-panel="alerts" aria-label="Event log">
+      <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-13</span><h2 class="panel-title">Event Log</h2><span class="panel-meta" data-meta>0 EVENTS</span></header>
+      <div class="panel-bd"></div>
+    </section>
+  </main>
+
+  <footer class="ticker">
+    <span class="ticker-label">INTEL</span>
+    <div class="ticker-track"><div class="ticker-run" id="ticker-run"></div></div>
+    <span class="ticker-keys"><kbd>E</kbd> ENHANCE <kbd>T</kbd> TRACE <kbd>`</kbd> SHELL <kbd>I</kbd> INTRUSION <kbd>M</kbd> AUDIO</span>
+  </footer>
+</div>
+
+<div class="fx-grain" aria-hidden="true"></div>
+<div class="fx-alarm" aria-hidden="true"></div>
+<canvas class="fx-trail" id="fx-trail" aria-hidden="true"></canvas>
+<div class="reticle" id="reticle" aria-hidden="true"><i class="reticle-ring"></i><i class="reticle-x"></i><span class="reticle-label" id="reticle-label"></span></div>
+
+<div class="banner" id="banner" hidden role="alert">
+  <div class="banner-stripe"></div>
+  <div class="banner-body">
+    <b class="banner-title" data-text="INTRUSION DETECTED">INTRUSION DETECTED</b>
+    <span class="banner-sub" id="banner-sub">COUNTER-TRACE INBOUND · ROTATING KEYS</span>
+  </div>
+  <div class="banner-stripe"></div>
+</div>
+
+<div class="takeover" id="takeover" hidden role="alert">
+  <div class="takeover-inner">
+    <span class="takeover-eyebrow" id="takeover-eyebrow">T&minus; 00:00:00.00</span>
+    <b class="takeover-title" id="takeover-title" data-text="ZERO HOUR">ZERO HOUR</b>
+    <span class="takeover-sub" id="takeover-sub">&nbsp;</span>
+    <span class="takeover-foot" id="takeover-foot">&nbsp;</span>
+    <div class="takeover-handler" id="takeover-handler" hidden>
+      <span class="fh-face tk-face"><img data-fh alt=""></span>
+      <span class="takeover-quote"><small>HANDLER · SECURE UPLINK</small><b id="takeover-quote"></b></span>
+    </div>
+  </div>
+</div>
+
+<aside class="uplink" id="uplink" hidden aria-live="polite" aria-label="Handler uplink">
+  <div class="uplink-hd">
+    <i class="uplink-dot"></i><span class="uplink-title">SECURE UPLINK · HANDLER</span>
+    <b class="uplink-ch" id="uplink-ch">CH-07</b>
+    <button class="uplink-x" id="uplink-x" type="button" aria-label="Close uplink" data-hot>&#x2715;</button>
+  </div>
+  <div class="uplink-bd">
+    <div class="uplink-screen">
+      <span class="fh-face up-face"><img data-fh alt="Handler FEDHEAD, live head scan"><img data-fh class="fh-ghost-r" alt=""><img data-fh class="fh-ghost-b" alt=""></span>
+      <i class="uplink-scan"></i>
+      <span class="uplink-tag">LIVE · 3D HEAD SCAN</span>
+    </div>
+    <div class="uplink-info">
+      <b class="uplink-name">FEDHAT</b>
+      <small class="uplink-role">AGENT F.H. · NULLSEC HQ · SINCE 1997</small>
+      <div class="uplink-vu" id="uplink-vu" aria-hidden="true"></div>
+      <p class="uplink-line" id="uplink-line"></p>
+      <p class="uplink-reply" id="uplink-reply" hidden></p>
+    </div>
+  </div>
+  <div class="uplink-ft"><span>ENC AES-4096</span><span id="uplink-lat">LAT 23 MS</span><span id="uplink-clock">00:00</span></div>
+</aside>
+
+<div class="protocol" id="protocol" hidden role="alert">
+  <canvas class="protocol-fx" id="protocol-fx"></canvas>
+  <div class="protocol-core">
+    <div class="protocol-holo">
+      <i class="ring r1"></i><i class="ring r2"></i><i class="ring r3"></i>
+      <span class="fh-face protocol-face"><img data-fh alt="Agent FEDHEAD"><img data-fh class="fh-ghost-r" alt=""><img data-fh class="fh-ghost-b" alt=""></span>
+      <i class="protocol-cone"></i>
+    </div>
+    <span class="protocol-eyebrow">ARCHIVE 26·06·1997 · FEDHEAD-CW.GIF · 8 FRAMES · 360&deg;</span>
+    <b class="protocol-title" data-text="FEDHEAD PROTOCOL">FEDHEAD PROTOCOL</b>
+    <span class="protocol-sub">ACCESS GRANTED · WELCOME BACK, AGENT FED</span>
+    <span class="protocol-cover">COVER ID LEWIS · &ldquo;YOU'RE NOT DREAMING, I'M FOR REAL.&rdquo;</span>
+    <span class="protocol-foot" id="protocol-foot">+01:00 OVERRIDE APPLIED · CLICK TO RESUME</span>
+  </div>
+</div>
+
+<div class="bouncer" id="bouncer" hidden aria-hidden="true">
+  <span class="fh-face bouncer-face"><img data-fh alt=""></span>
+  <b>FEDHEAD</b>
+</div>
+
+<pre id="hd-errlog" hidden></pre>
+<!--@SCRIPTS-->

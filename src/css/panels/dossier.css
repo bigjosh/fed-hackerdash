@@ -1,0 +1,457 @@
+/* FEDLIGHT · P-12 TARGET DOSSIER */
+
+[data-panel="dossier"] .dos-cq {
+  position: absolute;
+  inset: 0;
+  container: dos / size;
+}
+[data-panel="dossier"] .dos-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px 5px;
+  overflow: hidden;
+  --k-size: 9px;
+  --v-size: 10.5px;
+  --k-w: 80px;
+  background:
+    repeating-linear-gradient(0deg, rgba(95, 243, 255, 0.022) 0 1px, transparent 1px 4px);
+}
+
+/* reading sweep: a faint band travelling down the file */
+[data-panel="dossier"] .dos-sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: linear-gradient(180deg, transparent 0 44%, rgba(95, 243, 255, 0.05) 49%, rgba(95, 243, 255, 0.13) 50%, transparent 50.6%);
+  animation: dos-sweep 7s linear infinite;
+}
+@keyframes dos-sweep { from { transform: translateY(-50%); } to { transform: translateY(50%); } }
+
+/* ---------------------------------------------------------------- top strip */
+
+[data-panel="dossier"] .dos-top {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 14px;
+  min-width: 0;
+}
+[data-panel="dossier"] .dos-file {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+[data-panel="dossier"] .dos-file i {
+  font: 600 9px/1 var(--f-ui);
+  font-style: normal;
+  letter-spacing: 0.18em;
+  color: var(--text-dim);
+}
+[data-panel="dossier"] .dos-file b {
+  font: 700 10.5px/1 var(--f-mono);
+  letter-spacing: 0.06em;
+  color: var(--neon);
+  text-shadow: 0 0 8px rgba(255, 42, 109, 0.45);
+}
+[data-panel="dossier"] .dos-barcode {
+  flex: 1 1 auto;
+  min-width: 16px;
+  max-width: 150px;
+  height: 11px;
+  opacity: 0.55;
+  background-repeat: no-repeat;
+}
+[data-panel="dossier"] .dos-copy {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font: 500 9px/1 var(--f-mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------- photo + id */
+
+[data-panel="dossier"] .dos-main {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  min-width: 0;
+}
+[data-panel="dossier"] .dos-photo {
+  position: relative;
+  width: min(35cqw, 41cqh);
+  aspect-ratio: 5 / 6;
+  border: 1px solid rgba(95, 243, 255, 0.35);
+  background: #02070a;
+  box-shadow: inset 0 0 0 1px rgba(2, 5, 10, 0.9);
+}
+/* chamfer ticks on the photo frame */
+[data-panel="dossier"] .dos-photo::before,
+[data-panel="dossier"] .dos-photo::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  width: 7px;
+  height: 7px;
+  border: 0 solid var(--holo);
+  pointer-events: none;
+}
+[data-panel="dossier"] .dos-photo::before { top: -2px; left: -2px; border-top-width: 1px; border-left-width: 1px; }
+[data-panel="dossier"] .dos-photo::after { bottom: -2px; right: -2px; border-bottom-width: 1px; border-right-width: 1px; }
+
+[data-panel="dossier"] .dos-id {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 2px;
+  min-width: 0;
+}
+[data-panel="dossier"] .dos-id .dos-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-bottom: 3px;
+  border-bottom: 1px dashed rgba(95, 243, 255, 0.12);
+}
+[data-panel="dossier"] .dos-pair {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+[data-panel="dossier"] .dos-pair .dos-row { border-bottom: 0; padding-bottom: 0; }
+
+/* ------------------------------------------------------------------ rows */
+
+[data-panel="dossier"] .dos-rows {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid rgba(95, 243, 255, 0.2);
+}
+[data-panel="dossier"] .dos-rows .dos-k { letter-spacing: 0.11em; }
+[data-panel="dossier"] .dos-rows .dos-row {
+  display: grid;
+  grid-template-columns: var(--k-w) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  padding: 2px 0 2px;
+  border-bottom: 1px dashed rgba(95, 243, 255, 0.1);
+}
+[data-panel="dossier"] .dos-row { position: relative; min-width: 0; transition: opacity 0.2s; }
+[data-panel="dossier"] .dos-k {
+  font: 600 var(--k-size)/1.25 var(--f-ui);
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-panel="dossier"] .dos-vl {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+[data-panel="dossier"] .dos-v {
+  flex: 0 1 auto;
+  min-width: 0;
+  font: 500 var(--v-size)/1.3 var(--f-mono);
+  color: var(--ice);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-panel="dossier"] .dos-sub {
+  flex: 0 1 auto;
+  min-width: 0;
+  font: 500 9px/1.3 var(--f-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-panel="dossier"] .dos-dim { color: var(--text-dim); }
+[data-panel="dossier"] .dos-line2 {
+  display: flex;
+  min-width: 0;
+  font: 500 9px/1.3 var(--f-mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+[data-panel="dossier"] .dos-dist { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+[data-panel="dossier"] .dos-age { flex: 0 0 auto; }
+[data-panel="dossier"] .dos-age::before { content: " · UPDATED "; white-space: pre; color: var(--text-dim); }
+[data-panel="dossier"] .dos-age.is-stale { color: var(--amber); }
+/* short values never give up their width to the tags beside them */
+[data-panel="dossier"] .dos-row[data-k="plate"] .dos-v,
+[data-panel="dossier"] .dos-row[data-k="speed"] .dos-v { flex: 0 0 auto; }
+
+/* LAST SEEN: street on top, district + freshness underneath */
+[data-panel="dossier"] .dos-row[data-k="seen"] .dos-vl { flex-direction: column; align-items: stretch; gap: 0; }
+[data-panel="dossier"] .dos-row[data-k="seen"] .dos-v { font-weight: 700; }
+
+/* CHARGES wrap to two lines */
+[data-panel="dossier"] .dos-row[data-k="charges"] .dos-v {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text);
+  font-size: calc(var(--v-size) - 0.5px);
+  line-height: 1.25;
+}
+
+[data-panel="dossier"] .dos-code {
+  font: 400 13px/1.25 var(--f-display);
+  letter-spacing: 0.2em;
+  color: var(--ice);
+  text-shadow: 0 0 10px rgba(95, 243, 255, 0.5);
+}
+
+/* NAME: black redaction bar that leaks letters */
+[data-panel="dossier"] .dos-redact {
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 12px;
+  margin: 1px 0;
+  padding: 0 2px;
+  gap: 0;
+  background: #000;
+  outline: 1px solid rgba(95, 243, 255, 0.14);
+  background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.035) 0 2px, transparent 2px 5px);
+}
+[data-panel="dossier"] .dos-redact i {
+  display: inline-block;
+  width: 6.2px;
+  font: 700 10px/12px var(--f-mono);
+  font-style: normal;
+  text-align: center;
+  color: transparent;
+}
+[data-panel="dossier"] .dos-redact i.is-leak { color: var(--threat); background: rgba(255, 35, 64, 0.18); text-shadow: 0 0 6px var(--threat); }
+
+/* THREAT chip + STATUS */
+[data-panel="dossier"] .dos-chip {
+  flex: 0 0 auto;
+  display: inline-block;
+  margin-top: 1px;
+  padding: 2px 7px 2px 8px;
+  font: 700 10px/1.2 var(--f-ui);
+  letter-spacing: 0.22em;
+  color: #fff;
+  background: var(--threat);
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  overflow: visible;
+}
+[data-panel="dossier"] .dos-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-weight: 700;
+  color: var(--ice);
+  animation: dos-flick 1.2s linear infinite;
+}
+[data-panel="dossier"] .dos-status::before {
+  content: "";
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  background: var(--threat);
+  box-shadow: 0 0 6px var(--threat);
+}
+html[data-phase="critical"] [data-panel="dossier"] .dos-status,
+html[data-phase="final"] [data-panel="dossier"] .dos-status { animation-duration: 0.5s; color: #ff8a98; }
+@keyframes dos-blink { 50% { opacity: 0.3; } }
+@keyframes dos-flick { 0%, 62% { opacity: 1; } 63%, 100% { opacity: 0.28; } }
+
+/* PLATE */
+[data-panel="dossier"] .dos-v.is-redacted {
+  color: transparent;
+  text-shadow: none;
+  letter-spacing: 0;
+  background: #000 repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.035) 0 2px, transparent 2px 5px);
+  outline: 1px solid rgba(95, 243, 255, 0.14);
+  outline-offset: -1px;
+}
+[data-panel="dossier"] .dos-v.is-plate {
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--ice);
+  text-shadow: 0 0 8px rgba(61, 255, 127, 0.45);
+}
+[data-panel="dossier"] .dos-tag {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  font: 600 9px/13px var(--f-ui);
+  letter-spacing: 0.14em;
+  border: 1px solid currentColor;
+}
+[data-panel="dossier"] .dos-tag .dos-ts { display: none; }
+[data-panel="dossier"] .dos-tag.is-wait { color: var(--amber); animation: dos-blink 1.6s steps(2) infinite; }
+[data-panel="dossier"] .dos-tag.is-run { color: var(--amber); background: rgba(255, 182, 39, 0.12); animation: dos-blink 0.4s steps(2) infinite; }
+[data-panel="dossier"] .dos-tag.is-ok { color: var(--phosphor); background: rgba(61, 255, 127, 0.1); }
+
+/* CONFIRMED badge */
+[data-panel="dossier"] .dos-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  font: 700 9px/13px var(--f-ui);
+  letter-spacing: 0.12em;
+  color: var(--phosphor);
+  border: 1px solid var(--phosphor);
+  background: rgba(61, 255, 127, 0.1);
+  padding-right: 4px;
+  white-space: nowrap;
+}
+/* in the ID column the badge rides the label line, so it never squeezes the value */
+[data-panel="dossier"] .dos-id .dos-badge {
+  position: absolute;
+  top: -1px;
+  right: 0;
+  margin: 0;
+  line-height: 11px;
+}
+[data-panel="dossier"] .dos-badge i {
+  font-style: normal;
+  padding: 0 3px;
+  margin-right: 4px;
+  color: var(--bg);
+  background: var(--phosphor);
+  letter-spacing: 0.08em;
+}
+[data-panel="dossier"] .dos-badge.is-new-a { animation: dos-badge-a 0.28s steps(2) 10; }
+[data-panel="dossier"] .dos-badge.is-new-b { animation: dos-badge-b 0.28s steps(2) 10; }
+@keyframes dos-badge-a { 50% { opacity: 0.15; box-shadow: 0 0 10px rgba(61, 255, 127, 0.8); } }
+@keyframes dos-badge-b { 50% { opacity: 0.15; box-shadow: 0 0 10px rgba(61, 255, 127, 0.8); } }
+
+/* extra rows only in tall containers */
+[data-panel="dossier"] .dos-xtra,
+[data-panel="dossier"] .dos-mid { display: none !important; }
+@container dos (min-height: 320px) {
+  [data-panel="dossier"] .dos-rows .dos-mid { display: grid !important; }
+}
+
+/* row states */
+[data-panel="dossier"] .dos-row.is-pending { opacity: 0.25; }
+[data-panel="dossier"] .dos-row.is-pending .dos-k::after { content: " ▮"; color: var(--holo); }
+[data-panel="dossier"] .dos-row.is-ping-a { animation: dos-ping-a 0.9s ease-out; }
+[data-panel="dossier"] .dos-row.is-ping-b { animation: dos-ping-b 0.9s ease-out; }
+@keyframes dos-ping-a { 0% { background: rgba(95, 243, 255, 0.2); } 100% { background: transparent; } }
+@keyframes dos-ping-b { 0% { background: rgba(95, 243, 255, 0.2); } 100% { background: transparent; } }
+[data-panel="dossier"] .dos-row.is-ok-a { animation: dos-ok-a 1.6s ease-out; }
+[data-panel="dossier"] .dos-row.is-ok-b { animation: dos-ok-b 1.6s ease-out; }
+@keyframes dos-ok-a { 0%, 20% { background: rgba(61, 255, 127, 0.38); box-shadow: 0 0 14px rgba(61, 255, 127, 0.4); } 100% { background: transparent; box-shadow: none; } }
+@keyframes dos-ok-b { 0%, 20% { background: rgba(61, 255, 127, 0.38); box-shadow: 0 0 14px rgba(61, 255, 127, 0.4); } 100% { background: transparent; box-shadow: none; } }
+
+/* ------------------------------------------------------ CLASSIFIED stamp */
+
+[data-panel="dossier"] .dos-stamp {
+  position: absolute;
+  left: 58%;
+  top: 60%;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 12px 4px 16px;
+  border: 3px double var(--neon);
+  color: var(--neon);
+  opacity: 0.16;
+  transform: translate(-50%, -50%) rotate(-17deg);
+  pointer-events: none;
+  white-space: nowrap;
+}
+[data-panel="dossier"] .dos-stamp b {
+  font: 400 clamp(16px, 8cqw, 36px)/1 var(--f-display);
+  letter-spacing: 0.2em;
+}
+[data-panel="dossier"] .dos-stamp small {
+  font: 700 clamp(9px, 2.6cqw, 12px)/1 var(--f-ui);
+  letter-spacing: 0.3em;
+}
+
+/* ------------------------------------------------------------- intrusion */
+
+[data-panel="dossier"] .dos-root.is-glitch-a,
+[data-panel="dossier"] .dos-root.is-glitch-b { animation: dos-glitch 0.12s steps(2) 8; }
+[data-panel="dossier"] .dos-root.is-glitch-a .dos-v,
+[data-panel="dossier"] .dos-root.is-glitch-b .dos-v { text-shadow: -2px 0 rgba(255, 42, 109, 0.8), 2px 0 rgba(95, 243, 255, 0.7); }
+@keyframes dos-glitch {
+  0% { transform: translate(0, 0); clip-path: inset(0 0 0 0); }
+  50% { transform: translate(-2px, 1px); clip-path: inset(12% 0 30% 0); }
+  100% { transform: translate(2px, 0); clip-path: inset(0 0 0 0); }
+}
+
+/* ------------------------------------------------------- container sizes */
+
+/* big (1440p): larger type and the extra rows */
+@container dos (min-width: 390px) and (min-height: 380px) {
+  [data-panel="dossier"] .dos-root { --k-size: 10px; --v-size: 12px; --k-w: 104px; gap: 6px; padding: 8px 10px 6px; }
+  [data-panel="dossier"] .dos-code { font-size: 16px; }
+  [data-panel="dossier"] .dos-xtra { display: flex !important; }
+  [data-panel="dossier"] .dos-rows .dos-xtra { display: grid !important; }
+  [data-panel="dossier"] .dos-rows .dos-row { padding: 2px 0; }
+  [data-panel="dossier"] .dos-top { height: 16px; }
+  [data-panel="dossier"] .dos-file b { font-size: 12px; }
+  [data-panel="dossier"] .dos-sub,
+  [data-panel="dossier"] .dos-line2,
+  [data-panel="dossier"] .dos-tag,
+  [data-panel="dossier"] .dos-badge { font-size: 10px; }
+  [data-panel="dossier"] .dos-chip { font-size: 11px; }
+}
+
+/* short containers: charges on one line, drop associates */
+@container dos (max-height: 282px) {
+  [data-panel="dossier"] .dos-row[data-k="assoc"] { display: none; }
+}
+
+/* compact (720p): thumbnail photo, key rows only */
+@container dos (max-width: 260px) or (max-height: 215px) {
+  [data-panel="dossier"] .dos-root { gap: 4px; padding: 4px 6px 4px; --k-w: 60px; --v-size: 10px; }
+  [data-panel="dossier"] .dos-main { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  [data-panel="dossier"] .dos-photo { order: 2; width: min(24cqw, 34cqh); }
+  [data-panel="dossier"] .dos-copy,
+  [data-panel="dossier"] .dos-row[data-k="name"],
+  [data-panel="dossier"] .dos-row[data-k="aliases"],
+  [data-panel="dossier"] .dos-row[data-k="vehicle"] .dos-sub,
+  [data-panel="dossier"] .dos-row[data-k="speed"] .dos-sub,
+  [data-panel="dossier"] .dos-row[data-k="assoc"],
+  [data-panel="dossier"] .dos-row[data-k="charges"] { display: none; }
+  [data-panel="dossier"] .dos-code { font-size: 12px; letter-spacing: 0.16em; }
+  [data-panel="dossier"] .dos-stamp { left: 50%; top: 64%; }
+  [data-panel="dossier"] .dos-badge i { display: none; }
+  [data-panel="dossier"] .dos-age::before { content: " · "; }
+  [data-panel="dossier"] .dos-tag .dos-tl { display: none; }
+  [data-panel="dossier"] .dos-tag .dos-ts { display: inline; }
+}
+
+/* reduced motion: no blinking or sweeping; state still updates */
+html.is-still [data-panel="dossier"] .dos-sweep,
+html.is-still [data-panel="dossier"] .dos-status,
+html.is-still [data-panel="dossier"] .dos-tag,
+html.is-still [data-panel="dossier"] .dos-badge,
+html.is-still [data-panel="dossier"] .dos-row { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  [data-panel="dossier"] .dos-sweep,
+  [data-panel="dossier"] .dos-status,
+  [data-panel="dossier"] .dos-tag,
+  [data-panel="dossier"] .dos-badge { animation: none !important; }
+}

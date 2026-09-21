@@ -1,0 +1,8 @@
+.shots/
+dev-*.html
+dev.html
+dist/
+__pycache__/
+tools/.cache/
+src/js/assets.gen.js
+*.tmp

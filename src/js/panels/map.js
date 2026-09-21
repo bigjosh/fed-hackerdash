@@ -1987,8 +1987,18 @@
     let Wd = cv.w;
     let Hd = cv.h;
     let mode = 'L';
+    const rulerT = 14; // top ruler height
+    const rulerL = 18; // left ruler width
     let navBox = { x0: 0, y0: 0, x1: 0, y1: 0 };
     let zones = [];
+    let tgtBox = null;
+    let telem = null; // bottom-left telemetry block, when it has room
+    let band = 14; // lowest HUD edge over the middle of the view
+    let hudK = 1; // HUD modules grow a notch on very large bodies
+    // where the target rests on screen (below the HUD when the HUD spans the middle), and the box the
+    // look-ahead may push it around in
+    let anc = { x: 0, y: 0, x0: 0, y0: 0, x1: 0, y1: 0 };
+    const tagP = { bx: 0, by: 0, w: 0, h: 0, sx: 1, sy: -1 };
     let lvDef = -7; // default zoom level for this panel size (quarter octaves)
     let kMin = -6;
     let kMax = 4;
@@ -2132,6 +2142,7 @@
       sprites.clear();
       LV.clear();
       for (const l of LMK) l.w = 0;
+      if (Wd > 0) layoutHud(); // the webfont changes the target block's height
     });
 
     /* ======================================================== input */
@@ -2668,6 +2679,25 @@
       g.fillRect(x - 1, y - 1, 2, 2);
     }
 
+    // the target's data tag: above the dot on the roomier side, else below it or level with it, and
+    // never under the HUD modules
+    function placeTag(tx, ty, w, h) {
+      const pref = tx + 34 + w < Wd - (mode === 'L' ? 110 : 70) ? 1 : -1;
+      let first = true;
+      for (const sy of [-1, 1, 0]) {
+        for (const sx of [pref, -pref]) {
+          const lx = tx + sx * 30;
+          const bx = sx > 0 ? lx : lx - w;
+          const by = U.clamp(sy < 0 ? ty - 30 - h : sy > 0 ? ty + 30 : ty - h / 2, rulerT + 4, Hd - h - 24);
+          const ok = bx >= rulerL + 2 && bx + w <= Wd - 2 && !zones.some((zn) => zn && bx < zn.x1 && bx + w > zn.x0 && by < zn.y1 && by + h > zn.y0);
+          if (ok || first) Object.assign(tagP, { bx, by, w, h, sx, sy });
+          first = false;
+          if (ok) return tagP;
+        }
+      }
+      return tagP;
+    }
+
     const lmBoxes = [];
     function drawLandmarks(g, ox, oy, z, now, S) {
       lmBoxes.length = 0;
@@ -2689,12 +2719,7 @@
       const ty = T.y * z + oy;
       lmBoxes.push(tx - 30, ty - 30, tx + 30, ty + 30);
       // the target's data tag and the unit tags are drawn later but outrank landmark labels
-      {
-        const tagW = S ? 92 : 118;
-        const side = tx + 34 + tagW < Wd - (mode === 'L' ? 110 : 70) ? 1 : -1;
-        const bx = side > 0 ? tx + 30 : tx - 30 - tagW;
-        lmBoxes.push(bx, ty - 66, bx + tagW, ty - 28);
-      }
+      lmBoxes.push(tagP.bx, tagP.by, tagP.bx + tagP.w, tagP.by + tagP.h);
       for (const u of units) {
         const x = u.x * z + ox;
         const y = u.y * z + oy;
@@ -2818,8 +2843,6 @@
       }
 
       // coordinate grid
-      const rulerT = 14;
-      const rulerL = 18;
       g.beginPath();
       for (let k = Math.max(0, Math.floor(wx0 / GRID)); k <= Math.min(26, Math.ceil(wx1 / GRID)); k++) {
         const x = Math.round(k * GRID * z + ox) + 0.5;
@@ -2845,6 +2868,8 @@
       const tx = T.x * z + ox;
       const ty = T.y * z + oy;
       const hr = (T.hdS * Math.PI) / 180;
+      const enh = punch && punch.e > 0.6;
+      placeTag(tx, ty, enh ? 176 : S ? 92 : 118, enh ? 58 : S ? 24 : 34);
 
       // range rings + bearing ticks
       g.setLineDash([2, 4]);
@@ -3166,7 +3191,8 @@
           g.font = F9;
           g.fillStyle = rgba(cc, 0.8);
           g.textAlign = 'right';
-          g.fillText(`${ll[0].toFixed(4)}N`, Wd - (L ? 28 : 6), yy - 7);
+          const lx = Wd - (L ? 28 : 6);
+          if (!zones.some((zn) => zn && lx - 50 < zn.x1 && lx > zn.x0 && yy - 13 < zn.y1 && yy > zn.y0)) g.fillText(`${ll[0].toFixed(4)}N`, lx, yy - 7);
           g.textAlign = 'left';
           g.save();
           g.translate(xx + 7, Hd - 24);
@@ -3241,20 +3267,15 @@
         g.stroke();
 
         // data tag with leader line
-        const enh = punch && punch.e > 0.6;
-        const tagW = enh ? 176 : S ? 92 : 118;
-        const tagH = enh ? 58 : S ? 24 : 34;
-        const side = tx + 34 + tagW < Wd - (L ? 110 : 70) ? 1 : -1;
+        const { bx, by, w: tagW, h: tagH, sx: side, sy } = tagP;
         const lxp = tx + side * 30;
-        const lyp = ty - 30;
-        const bx = side > 0 ? lxp : lxp - tagW;
-        const by = U.clamp(lyp - tagH, rulerT + 4, Hd - tagH - 24);
+        const lyp = ty + sy * 30;
         g.strokeStyle = rgba('threat', 0.7);
         g.lineWidth = 1;
         g.beginPath();
-        g.moveTo(tx + side * 7, ty - 7);
+        g.moveTo(tx + side * (sy ? 7 : 10), ty + sy * 7);
         g.lineTo(lxp, lyp);
-        g.lineTo(lxp, by + tagH);
+        if (sy) g.lineTo(lxp, sy < 0 ? by + tagH : by);
         g.stroke();
         g.fillStyle = 'rgba(20,2,8,0.82)';
         g.fillRect(bx, by, tagW, tagH);
@@ -3379,10 +3400,15 @@
       const rr = roseR;
       const nb = navBox;
       {
-        const x0 = nb.x0;
-        const y0 = nb.y0;
-        const w = nb.x1 - nb.x0;
-        const h = nb.y1 - nb.y0;
+        // drawn in module units, scaled up as one piece on very large bodies
+        const k = hudK;
+        g.save();
+        g.translate(nb.x0, nb.y0);
+        g.scale(k, k);
+        const x0 = 0;
+        const y0 = 0;
+        const w = (nb.x1 - nb.x0) / k;
+        const h = (nb.y1 - nb.y0) / k;
         g.beginPath();
         g.moveTo(x0, y0);
         g.lineTo(x0 + w - 9, y0);
@@ -3401,7 +3427,7 @@
         const rcx = x0 + rr + 14;
         const rcy = y0 + rr + 14;
         if (roseSpr) {
-          const n = roseSpr.width / dpr;
+          const n = roseSpr.width / (dpr * k);
           g.drawImage(roseSpr, rcx - n / 2, rcy - n / 2, n, n);
           g.save();
           g.translate(rcx, rcy);
@@ -3441,14 +3467,14 @@
         const opts = [50, 100, 250, 500, 1000, 2000, 5000];
         const maxPx = w - 24;
         let m = opts[0];
-        for (const o of opts) if (o * z <= maxPx) m = o;
-        const px = m * z;
+        for (const o of opts) if ((o * z) / k <= maxPx) m = o;
+        const px = (m * z) / k;
         const sx0 = x0 + 10;
         const sx1 = sx0 + px;
         const sy = y0 + h - 9;
-        for (let k = 0; k < 4; k++) {
-          g.fillStyle = k % 2 ? 'rgba(95,243,255,0.25)' : C.holo;
-          g.fillRect(sx0 + (px / 4) * k, sy, px / 4, 3);
+        for (let q = 0; q < 4; q++) {
+          g.fillStyle = q % 2 ? 'rgba(95,243,255,0.25)' : C.holo;
+          g.fillRect(sx0 + (px / 4) * q, sy, px / 4, 3);
         }
         g.strokeStyle = C.holo;
         g.beginPath();
@@ -3464,6 +3490,7 @@
         g.textAlign = 'left';
         g.fillStyle = rgba('text', 0.6);
         g.fillText('0', sx0, sy - 8);
+        g.restore();
       }
 
       // zoom ladder (hero only): one tick per zoom stop
@@ -3532,8 +3559,8 @@
         g.fill();
       }
 
-      // satellite telemetry micro-readout (bottom left)
-      if (!S) {
+      // satellite telemetry micro-readout (bottom left), when it clears the target block
+      if (telem) {
         g.font = F9;
         g.textAlign = 'left';
         g.fillStyle = rgba('text', 0.6);
@@ -3582,34 +3609,57 @@
           g.fillStyle = 'rgba(255,220,150,0.7)';
           g.fillRect(rulerL, sy, Wd - rulerL, 1);
         }
-        const cxm = rulerL + (Wd - rulerL) / 2;
         const title = 'ENHANCE GRID';
         g.font = FD(S ? 11 : 14);
         g.letterSpacing = S ? '3px' : '5px';
         g.textAlign = 'center';
         const tw = g.measureText(title).width;
         const bw = tw + 40;
-        const by = rulerT + (S ? 70 : 12);
-        g.fillStyle = 'rgba(24,14,2,0.85)';
-        g.fillRect(cxm - bw / 2, by, bw, S ? 36 : 40);
-        g.strokeStyle = C.amber;
-        g.lineWidth = 1;
-        g.strokeRect(cxm - bw / 2 + 0.5, by + 0.5, bw - 1, (S ? 36 : 40) - 1);
-        g.fillStyle = '#ffd27a';
-        g.fillText(title, cxm + 2, by + 13);
+        const bh = S ? 36 : 40;
+        // the title card takes the gap between the HUD modules, else a clear strip above or below
+        // the target; with no room it sits out and the brackets carry the beat
+        const clearAt = (x, y) =>
+          y >= rulerT + 4 && y + bh <= Hd - 22 && (y > ty + 28 || y + bh < ty - 28) &&
+          !zones.some((zn) => zn && x - bw / 2 < zn.x1 && x + bw / 2 > zn.x0 && y < zn.y1 && y + bh > zn.y0);
+        let cxm = rulerL + (Wd - rulerL) / 2;
+        let by = -1;
+        const gx0 = tgtBox ? tgtBox.x1 + 8 : rulerL;
+        const gx1 = navBox.x0 - 8;
+        if (gx1 - gx0 >= bw && clearAt((gx0 + gx1) / 2, rulerT + 12)) {
+          cxm = (gx0 + gx1) / 2;
+          by = rulerT + 12;
+        } else {
+          for (const y of [band + 8, rulerT + 12, Hd - 44 - bh]) {
+            if (clearAt(cxm, y)) {
+              by = y;
+              break;
+            }
+          }
+        }
+        if (by >= 0) {
+          g.fillStyle = 'rgba(24,14,2,0.85)';
+          g.fillRect(cxm - bw / 2, by, bw, bh);
+          g.strokeStyle = C.amber;
+          g.lineWidth = 1;
+          g.strokeRect(cxm - bw / 2 + 0.5, by + 0.5, bw - 1, bh - 1);
+          g.fillStyle = '#ffd27a';
+          g.fillText(title, cxm + 2, by + 13);
+          g.letterSpacing = '0px';
+          const prog = U.clamp((t - 0.3) / (punch.ain + punch.hold - 0.5), 0, 1);
+          g.fillStyle = rgba('amber', 0.25);
+          g.fillRect(cxm - bw / 2 + 8, by + (S ? 24 : 25), bw - 16, 3);
+          g.fillStyle = C.amber;
+          g.fillRect(cxm - bw / 2 + 8, by + (S ? 24 : 25), (bw - 16) * prog, 3);
+          g.font = F9;
+          g.fillStyle = rgba('amber', 0.9);
+          g.fillText(
+            prog < 1 ? `RESAMPLING ${gridRef(T.x, T.y)} · ${Math.round(prog * 4096)}/4096` : `×${(z / lvScale(lvDef)).toFixed(1)} · ${(1 / z).toFixed(1)} M/PX · SHARP`,
+            cxm,
+            by + (S ? 32 : 34)
+          );
+        }
         g.letterSpacing = '0px';
-        const prog = U.clamp((t - 0.3) / (punch.ain + punch.hold - 0.5), 0, 1);
-        g.fillStyle = rgba('amber', 0.25);
-        g.fillRect(cxm - bw / 2 + 8, by + (S ? 24 : 25), bw - 16, 3);
-        g.fillStyle = C.amber;
-        g.fillRect(cxm - bw / 2 + 8, by + (S ? 24 : 25), (bw - 16) * prog, 3);
-        g.font = F9;
-        g.fillStyle = rgba('amber', 0.9);
-        g.fillText(
-          prog < 1 ? `RESAMPLING ${gridRef(T.x, T.y)} · ${Math.round(prog * 4096)}/4096` : `×${(z / lvScale(lvDef)).toFixed(1)} · ${(1 / z).toFixed(1)} M/PX · SHARP`,
-          cxm,
-          by + (S ? 32 : 34)
-        );
+        g.textAlign = 'left';
         g.globalAlpha = 1;
       }
 
@@ -3731,11 +3781,36 @@
         const left = Math.max(0, Math.ceil((6000 - (now - lastUser)) / 1000));
         setT(F.auto, drag ? '' : `· ${left}S`);
       }
-      const meta = `SAT KH-9 · Z ${(zoom / lvScale(lvDef)).toFixed(1)}X`;
+      const meta = metaText();
       if (meta !== lastMeta) {
         lastMeta = meta;
         ctx.meta(meta);
       }
+    }
+    // a narrow header keeps the zoom and gives the title the room
+    const metaText = () => `${Wd < 400 ? '' : 'SAT KH-9 · '}Z ${(zoom / lvScale(lvDef)).toFixed(1)}X`;
+
+    // HUD footprint for this body size: the modules the canvas labels keep clear of, and the target's
+    // resting point, dropped below them when they span the middle of the view
+    function layoutHud() {
+      const w = Wd;
+      const h = Hd;
+      const bw = (mode === 'L' ? 150 : mode === 'M' ? 130 : 108) * hudK;
+      navBox = { x0: w - bw - 6, y0: 20, x1: w - 6, y1: 20 + (roseR * 2 + 54) * hudK };
+      const hr = hud.getBoundingClientRect();
+      const tr = hud.querySelector('.map-tgt').getBoundingClientRect();
+      // per axis: a layout morph can leave the panel non-uniformly scaled while this runs
+      const qx = hr.width > 0 ? w / hr.width : 1;
+      const qy = hr.height > 0 ? h / hr.height : 1;
+      tgtBox = { x0: (tr.left - hr.left) * qx, y0: (tr.top - hr.top) * qy, x1: (tr.right - hr.left) * qx, y1: (tr.bottom - hr.top) * qy };
+      const miniBox = mode === 'L' && h > 420 ? { x0: w - thumbW - 18, y0: h - thumbH - 48, x1: w - 6, y1: h - 26 } : null;
+      telem = mode !== 'S' && h >= 240 && h - 50 > tgtBox.y1 + 6 ? { x0: rulerL + 4, y0: h - 50, x1: rulerL + 316, y1: h - 20 } : null;
+      zones = [tgtBox, navBox, miniBox, telem];
+      band = rulerT;
+      for (const zn of [tgtBox, navBox]) if (zn.x0 < w / 2 + 24 && zn.x1 > w / 2 - 24) band = Math.max(band, zn.y1);
+      const lo = h - 18 - 20;
+      const y = band > rulerT ? Math.max(h / 2, (band + 12 + lo) / 2) : h / 2;
+      anc = { x: w / 2, y, x0: rulerL + 30, x1: w - 30, y0: Math.min(y, Math.max(rulerT + 24, band + 14)), y1: Math.max(y, lo - 4) };
     }
 
     function emitMove() {
@@ -3771,19 +3846,25 @@
         Hd = h;
         mode = w >= 720 && h >= 460 ? 'L' : w >= 470 ? 'M' : 'S';
         hud.dataset.mode = mode;
+        const k = mode === 'L' && w >= 1300 && h >= 760 ? 1.25 : 1;
         const nd = Math.min(2, window.devicePixelRatio || 1);
-        if (nd !== dpr) {
-          dpr = nd;
-          PPER = Math.max(4, Math.round(8 * dpr));
-          TS = PPER * 32;
-          flushTiles();
-          makePatterns();
-          renderThumb(156);
+        if (nd !== dpr || k !== hudK) {
+          if (nd !== dpr) {
+            dpr = nd;
+            PPER = Math.max(4, Math.round(8 * dpr));
+            TS = PPER * 32;
+            flushTiles();
+            makePatterns();
+          }
+          hudK = k;
+          hud.style.setProperty('--map-k', String(k));
+          renderThumb(Math.round(156 * k));
         }
         TILE_CAP = Math.max(24, Math.floor(48e6 / (TS * TS * 4))); // ~48 MB of tile bitmaps
-        // default view ~3 km across (never finer than 0.21 px/m), snapped to quarter octaves
+        // default view ~3 km across (never finer than 0.21 px/m), snapped to quarter octaves; on a
+        // wide strip the short side sets it, so the street grid keeps the hero's density
         const was = lvDef;
-        lvDef = Math.round(4 * Math.log2(Math.max(w / 3000, 0.21)));
+        lvDef = Math.round(4 * Math.log2(Math.max(Math.min(w, h * 2.6) / 3000, 0.21)));
         kMax = Math.max(1, Math.min(4, Math.floor((4 * Math.log2(w / 700) - lvDef) / 2)));
         kMin = -1;
         while (kMin > -12 && lvScale(stopLevel(kMin)) * W * 1.04 > w) kMin--;
@@ -3791,13 +3872,9 @@
         if (was !== lvDef || firstTick) zl = stopLevel(baseK);
         zoom = lvScale(zl);
         const r = mode === 'L' ? 30 : mode === 'M' ? 24 : 19;
-        buildRose(r, cv.dpr);
-        const bw = mode === 'L' ? 150 : mode === 'M' ? 130 : 108;
-        navBox = { x0: w - bw - 6, y0: 20, x1: w - 6, y1: 20 + r * 2 + 54 };
-        const t = hud.querySelector('.map-tgt');
-        const tgtBox = { x0: t.offsetLeft, y0: t.offsetTop, x1: t.offsetLeft + t.offsetWidth, y1: t.offsetTop + t.offsetHeight };
-        const miniBox = mode === 'L' && h > 420 ? { x0: w - thumbW - 18, y0: h - thumbH - 48, x1: w - 6, y1: h - 26 } : null;
-        zones = [tgtBox, navBox, miniBox];
+        buildRose(r, cv.dpr * hudK);
+        layoutHud();
+        ctx.meta(lastMeta = metaText());
       },
       tick(now, dt) {
         const frameStart = performance.now();
@@ -3843,19 +3920,22 @@
           zoom = lvScale(zl);
         }
         if (follow && !drag) {
-          const look = Math.min(0.12 * (Wd / zoom), 260) * U.clamp(T.speed / 90, 0, 1.2) * (punch ? 0.25 : 1) * (T.frozen ? 0 : 1);
+          // lead the target by a slice of the shorter view axis, keeping it inside the free area
+          const look = Math.min(0.12 * Wd, 0.2 * Hd, 260 * zoom) * U.clamp(T.speed / 90, 0, 1.2) * (punch ? 0.25 : 1) * (T.frozen ? 0 : 1);
           const hr = (T.hdS * Math.PI) / 180;
           const lam = punch || now - reacqAt < 1500 ? 5 : 2.2;
-          camX = U.damp(camX, T.x + Math.sin(hr) * look, lam, dt);
-          camY = U.damp(camY, T.y - Math.cos(hr) * look, lam, dt);
+          const sx = U.clamp(anc.x - Math.sin(hr) * look, anc.x0, anc.x1);
+          const sy = U.clamp(anc.y + Math.cos(hr) * look, anc.y0, anc.y1);
+          camX = U.damp(camX, T.x - (sx - Wd / 2) / zoom, lam, dt);
+          camY = U.damp(camY, T.y - (sy - Hd / 2) / zoom, lam, dt);
         } else if (!follow && !drag && now - lastUser > 6000) follow = true;
         const hw = Wd / 2 / zoom;
         const hh = Hd / 2 / zoom;
         camX = hw * 2 > W + 400 ? W / 2 : U.clamp(camX, hw - 200, W - hw + 200);
         camY = hh * 2 > H + 400 ? H / 2 : U.clamp(camY, hh - 200, H - hh + 200);
         if (firstTick) {
-          camX = T.x;
-          camY = T.y;
+          camX = T.x - (anc.x - Wd / 2) / zoom;
+          camY = T.y - (anc.y - Hd / 2) / zoom;
         }
 
         const lvlT = punch ? stopLevel(punch.to) : base;

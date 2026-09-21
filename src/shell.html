@@ -27,6 +27,12 @@
       <span class="chip chip-threat" id="chip-threat">THREAT <b>ELEVATED</b></span>
       <span class="chip chip-cd" id="chip-cd">T&minus; <b>04:00</b></span>
     </div>
+    <div class="lay-bar" id="lay-bar" role="toolbar" aria-label="Layout controls" hidden>
+      <span class="lay-bar-tag">LAYOUT MODE</span>
+      <span class="lay-bar-hint">DRAG A PANEL TO MOVE IT <i>&middot;</i> PULL ITS EDGES TO RESIZE <i>&middot;</i> ARROWS NUDGE <i>&middot;</i> SHIFT+ARROWS SIZE</span>
+      <button class="lay-bar-btn" id="lay-reset" type="button" title="Restore the stock grid">RESET</button>
+      <button class="lay-bar-btn is-primary" id="lay-lock" type="button" title="Lock the layout [L]">LOCK <kbd>L</kbd></button>
+    </div>
     <div class="clocks">
       <button class="op-badge" id="op-badge" type="button" title="Open handler uplink" data-hot hidden>
         <span class="fh-face op-face"><img data-fh alt=""></span>
@@ -35,12 +41,14 @@
       </button>
       <span class="clock">UTC <b id="clk-utc">--:--:--</b></span>
       <span class="clock">PARIS <b id="clk-local">--:--:--</b></span>
+      <button class="tb-btn" id="btn-layout" type="button" aria-pressed="false" title="Rearrange panels [L]">LAYOUT <b>EDIT</b></button>
       <button class="tb-btn" id="btn-audio" type="button" aria-pressed="false" title="Toggle audio [M]">AUDIO <b>OFF</b></button>
       <button class="tb-btn" id="btn-full" type="button" title="Fullscreen [F]">FULL</button>
     </div>
   </header>
 
   <main class="grid" id="grid">
+    <canvas class="lay-fx" id="lay-fx" aria-hidden="true" hidden></canvas>
     <section class="panel" data-panel="terminal" aria-label="Uplink shell">
       <header class="panel-hd"><i class="panel-led"></i><span class="panel-code">P-01</span><h2 class="panel-title">Uplink Shell</h2><span class="panel-meta" data-meta>tty/7 · root</span></header>
       <div class="panel-bd"></div>
@@ -110,7 +118,7 @@
   <footer class="ticker">
     <span class="ticker-label">INTEL</span>
     <div class="ticker-track"><div class="ticker-run" id="ticker-run"></div></div>
-    <span class="ticker-keys"><kbd>E</kbd> ENHANCE <kbd>T</kbd> TRACE <kbd>`</kbd> SHELL <kbd>I</kbd> INTRUSION <kbd>M</kbd> AUDIO</span>
+    <span class="ticker-keys"><kbd>E</kbd> ENHANCE <kbd>T</kbd> TRACE <kbd>`</kbd> SHELL <kbd>I</kbd> INTRUSION <kbd>L</kbd> LAYOUT <kbd>M</kbd> AUDIO</span>
   </footer>
 </div>
 
@@ -150,7 +158,7 @@
   </div>
   <div class="uplink-bd">
     <div class="uplink-screen">
-      <span class="fh-face up-face"><img data-fh alt="Handler FEDHEAD, live head scan"><img data-fh class="fh-ghost-r" alt=""><img data-fh class="fh-ghost-b" alt=""></span>
+      <span class="fh-face up-face"><img data-fh alt="Handler, live head scan"><img data-fh class="fh-ghost-r" alt=""><img data-fh class="fh-ghost-b" alt=""></span>
       <i class="uplink-scan"></i>
       <span class="uplink-tag">LIVE · 3D HEAD SCAN</span>
     </div>

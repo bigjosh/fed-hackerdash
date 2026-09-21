@@ -170,10 +170,32 @@
     if (v.glitch > 0) v.glitch -= dt;
   }
 
-  // One spectrogram column (power → dB → colormap) into `data`, starting at byte `off`, `stride` bytes per row.
-  function synthColumn(v, H, data, off, stride, t) {
+  // Per-row constants for a spectrogram of H rows: bin frequency, the static carrier furniture
+  // (CTCSS pilot, channel edge, a fixed heterodyne whistle) and the speech spectral tilt.
+  function makeRows(H) {
+    const f = new Float32Array(H);
+    const base = new Float32Array(H);
+    const tilt = new Float32Array(H);
+    for (let y = 0; y < H; y++) {
+      const fy = FMAX * (1 - (y + 0.5) / H);
+      f[y] = fy;
+      base[y] = 0.6 * gauss(fy, 88.5, 45) + 0.01 * gauss(fy, 3450, 30) + 0.03 * gauss(fy, 2890, 22);
+      tilt[y] = 30 / (1 + fy / 1800);
+    }
+    return { H, f, base, tilt };
+  }
+
+  // One spectrogram column (power → dB → colormap) into `data`, starting at byte `off`, `stride` bytes
+  // per row; the normalised level of each row also lands in `dbOut` when given. Gaussian bands are
+  // only evaluated within 3.5 bandwidths of their centre, which keeps tall panels cheap.
+  function synthColumn(v, T, data, off, stride, t, dbOut) {
     const r = v.r;
+    const H = T.H;
+    const Fq = T.f;
+    const base = T.base;
+    const tilt = T.tilt;
     const env2 = v.env * v.env;
+    const talk = env2 > 0.0004;
     const f0 = v.f0;
     const F1 = v.F[0];
     const F2 = v.F[1];
@@ -188,15 +210,22 @@
     const whF = 1650 + 60 * Math.sin(t * 0.37);
     const whA = 0.05 + 0.03 * Math.sin(t * 1.3);
     for (let y = 0; y < H; y++) {
-      const f = FMAX * (1 - (y + 0.5) / H);
-      let p = 0.016 * (0.3 + r() * 1.4);
-      // CTCSS pilot, channel edge and two faint heterodyne whistles
-      p += 0.6 * gauss(f, 88.5, 45) + 0.01 * gauss(f, 3450, 30) + whA * gauss(f, whF, 26) + 0.03 * gauss(f, 2890, 22);
-      if (env2 > 0.0004) {
+      const f = Fq[y];
+      let p = 0.016 * (0.3 + r() * 1.4) + base[y];
+      // the drifting heterodyne whistle
+      let d = f - whF;
+      if (d < 91 && d > -91) p += whA * Math.exp(-(d * d) / 676);
+      if (talk) {
+        let form = 0.002;
+        d = f - F1;
+        if (d < 263 && d > -263) form += Math.exp(-(d * d) / 5625);
+        d = f - F2;
+        if (d < 333 && d > -333) form += 0.62 * Math.exp(-(d * d) / 9025);
+        d = f - F3;
+        if (d < 420 && d > -420) form += 0.34 * Math.exp(-(d * d) / 14400);
         const c = 0.5 + 0.5 * Math.cos((TAU * f) / f0);
         const comb = 1 - combDepth + combDepth * c * c * c * c;
-        const form = gauss(f, F1, 75) + 0.62 * gauss(f, F2, 95) + 0.34 * gauss(f, F3, 120) + 0.002;
-        p += (env2 * 30 * form * comb) / (1 + f / 1800);
+        p += env2 * form * comb * tilt[y];
       }
       if (v.fr > 0.01) p += v.fr * 1.6 * (0.3 + r()) / (1 + Math.exp(-(f - v.frF) / 180));
       if (v.pl) p += (f > 1500 ? 0.08 : 0.015) * (0.3 + r());
@@ -204,6 +233,7 @@
       if (jam) p += 2.2 * r() * r() + 70 * gauss(f, chirp, 55) + 30 * gauss(f, chirp2, 70) + (r() < 0.012 ? 90 : 0);
       if (glitch) p += 4 * r();
       const db = (10 * Math.log10(p) + 24) / 38;
+      if (dbOut) dbOut[y] = db;
       const l = (db <= 0 ? 0 : db >= 1 ? 255 : (db * 255) | 0) * 4;
       const o = off + y * stride;
       data[o] = LUT[l];
@@ -230,7 +260,7 @@
         <span class="spec-fq"><b class="spec-freq">437.225</b><span class="spec-u">MHz</span></span>
         <span class="spec-sep spec-mod-s">·</span><span class="spec-mod">NFM</span>
         <span class="spec-sep">·</span><span class="spec-dbm">−71 dBm</span>
-        <span class="spec-sep">·</span><span class="spec-snr">SNR <b>14</b><span class="spec-snr-u"> dB</span></span>
+        <span class="spec-sep spec-snr-s">·</span><span class="spec-snr">SNR <b>14</b><span class="spec-snr-u"> dB</span></span>
         <span class="spec-tc">T+00:00:00</span>
       </div>
       <div class="spec-stage"><div class="spec-wf"></div></div>
@@ -270,6 +300,10 @@
     const ov = ctx.canvas({ parent: stage, className: 'spec-ov' });
     const stat = document.createElement('canvas');
     let colImg = null;
+    let rows = null; // makeRows() tables for the current waterfall height
+    let dbBuf = null; // levels of the newest column, for the live spectrum slice
+    let hold = null; // peak hold of the live spectrum slice
+    let pf = null; // history still to synthesise: {v, t, x, step, img}
     // Chrome may drop 2D canvas backing stores under memory pressure; they come back blank with a
     // 'contextrestored' event, so the waterfall history and the static layer are rebuilt then.
     let lost = false;
@@ -280,7 +314,8 @@
     const voice = makeVoice(ctx.rng(HD.seed ^ 0x1dea5));
     let lay = 'sm';
     let wide = false;
-    let G = { sw: 0, sh: 0, scW: 0, wx: 0, wW: 0, wH: 0, side: 0, gut: 0 };
+    let narrow = false;
+    let G = { sw: 0, sh: 0, sx: 0, sy: 0, scW: 0, scH: 0, wx: 0, wy: 0, wW: 0, wH: 0, side: 0, gut: 0, fs: 9, stats: null };
     let simT = 0;
     let colN = 0;
     let started = 0;
@@ -395,22 +430,42 @@
 
     /* ------------------------------------------------------------ layout */
 
+    const ROWLBL = ['F0', 'F1', 'F2', 'F3', 'VAD', 'LPC', 'CAND'];
+    // History synthesis budget (pixels): the newest columns at resize time, then per frame.
+    const SYNC_PX = 60000;
+    const STEP_PX = 12000;
+
     function layout(w, h) {
       lay = h < 100 ? 'xs' : h < 168 ? 'sm' : 'md';
       wide = w >= 400;
+      narrow = w < 200;
+      const lg = w >= 900 && h >= 480;
       root.dataset.lay = lay;
       root.classList.toggle('is-wide', wide);
+      root.classList.toggle('is-lg', lg);
       ov.fit();
       const sw = ov.w;
       const sh = ov.h;
-      const side = wide ? 88 : 0;
-      const gut = lay === 'xs' ? 17 : 21;
-      const scW = Math.round(U.clamp((sw - side) * 0.38, 60, 200));
-      const wx = scW + gut;
-      G = { sw, sh, side, gut, scW, wx, wW: Math.max(8, sw - side - wx), wH: sh };
-      wfBox.style.cssText = `left:${G.wx}px;top:0;width:${G.wW}px;height:${G.wH}px`;
+      const fs = lg ? 11 : 9;
+      // tall panels stack the scope over the waterfall instead of squeezing both into slivers
+      const stack = sh > sw * 1.25 && sh >= 220;
+      const gut = lay === 'xs' ? 17 : lg ? 26 : 21;
+      const stats = wide && !stack ? statsLayout(sw, sh, lg) : null;
+      const side = stats ? stats.side : 0;
+      let geo;
+      if (stack) {
+        const scH = Math.round(U.clamp(sh * 0.3, 70, 260));
+        const wy = scH + (lg ? 12 : 8);
+        geo = { sx: 0, sy: 0, scW: sw, scH, wx: gut, wy, wW: Math.max(8, sw - gut), wH: Math.max(8, sh - wy) };
+      } else {
+        const scW = Math.round(U.clamp((sw - side) * 0.38, 60, U.clamp(sh * 0.45, 200, 380)));
+        geo = { sx: 0, sy: 0, scW, scH: sh, wx: scW + gut, wy: 0, wW: Math.max(8, sw - side - scW - gut), wH: sh };
+      }
+      G = { sw, sh, side, gut, fs, stack, stats, ...geo };
+      hold = stats && stats.psd ? new Float32Array(Math.max(2, Math.min(256, Math.floor(stats.psd.h / 2)))) : null;
+      wfBox.style.cssText = `left:${G.wx}px;top:${G.wy}px;width:${G.wW}px;height:${G.wH}px`;
       wf.fit();
-      const mw = measure.getBoundingClientRect().width;
+      const mw = measure.offsetWidth; // layout px: immune to a layout-editor morph in progress
       if (mw > 20) cw = mw / 10;
       const lw = curLn.clientWidth;
       cap = Math.max(8, Math.floor((lw - 10) / cw) - (curWho.textContent.length + 1));
@@ -419,21 +474,82 @@
       renderStatic();
     }
 
-    // Fill the waterfall with a few seconds of plausible history so it is never blank.
+    // Formant / matcher readouts beside the waterfall: a titled column when there is height for it,
+    // else the key rows packed into short columns. A tall column also gets a live spectrum slice.
+    function statsLayout(sw, sh, lg) {
+      const fsS = lg ? 11 : 9;
+      const key = [0, 1, 2, 3, 6];
+      const list = [];
+      let side;
+      let hdr = false;
+      let bottom = 0;
+      if (sh >= 66) {
+        hdr = true;
+        const rowsShown = sh >= (lg ? 150 : 86) ? [0, 1, 2, 3, 4, 5, 6] : key;
+        side = lg ? 150 : 88;
+        const y0 = lg ? 34 : 24;
+        const lh = Math.min(lg ? 18 : 13, (sh - y0 - 2) / (rowsShown.length - 1));
+        rowsShown.forEach((i, j) => list.push({ i, x: sw - side + 8, xr: sw - 6, y: y0 + j * lh }));
+        bottom = y0 + (rowsShown.length - 1) * lh + 6;
+      } else if (sh >= 11) {
+        const per = U.clamp(Math.floor((sh - 11) / 10) + 1, 1, 5);
+        const cols = Math.ceil(key.length / per);
+        const cwid = 64;
+        side = 8 + cols * cwid;
+        const lh = per > 1 ? Math.min(12, (sh - 11) / (per - 1)) : 0;
+        key.forEach((i, k) => {
+          const x = sw - side + 8 + Math.floor(k / per) * cwid;
+          list.push({ i, x, xr: x + cwid - 10, y: 10 + (k % per) * lh });
+        });
+      } else return null;
+      const psd = hdr && sh - bottom - 10 >= 110 ? { x: sw - side + 8, y: bottom + 10, w: side - 13, h: sh - bottom - 11, top: fsS + 8 } : null;
+      return { side, hdr, fsS, list, psd, hx: sw - side + 8 };
+    }
+
+    // Fill the waterfall with plausible history so it is never blank. Only the newest columns are
+    // synthesised now (a full-screen waterfall is over a million pixels); the older ones sit on a
+    // quiet-channel floor and are filled in right to left over the next frames.
     function prefill() {
       const W = wf.canvas.width;
       const H = wf.canvas.height;
-      if (W < 2 || H < 2) return;
-      const img = wf.ctx.createImageData(W, H);
-      const pv = makeVoice(ctx.rng(HD.seed ^ 0x77e1));
-      pv.t = 0.5;
-      for (let x = 0; x < W; x++) {
-        stepVoice(pv, 1 / 40);
-        synthColumn(pv, H, img.data, x * 4, W * 4, x / 40);
-      }
-      wf.ctx.putImageData(img, 0, 0);
-      colImg = wf.ctx.createImageData(1, H);
+      pf = null;
       markers.length = 0;
+      if (W < 2 || H < 2) return;
+      rows = makeRows(H);
+      colImg = wf.ctx.createImageData(1, H);
+      dbBuf = new Float32Array(H);
+      const g = wf.ctx;
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      const now = Math.min(W, Math.max(8, Math.floor(SYNC_PX / H)));
+      const step = Math.max(2, Math.floor(STEP_PX / H));
+      if (now < W) {
+        const tw = Math.min(W - now, 48);
+        const tile = g.createImageData(tw, H);
+        const qv = makeVoice(ctx.rng(HD.seed ^ 0x9e1));
+        // a fixed time keeps the drifting whistle flat, so the repeated tile shows no seams
+        for (let x = 0; x < tw; x++) synthColumn(qv, rows, tile.data, x * 4, tw * 4, 0);
+        g.putImageData(tile, 0, 0);
+        for (let x = tw; x < W - now; x += tw) g.drawImage(wf.canvas, 0, 0, tw, H, x, 0, Math.min(tw, W - now - x), H);
+      }
+      pf = { v: makeVoice(ctx.rng(HD.seed ^ 0x77e1)), t: 0, x: W, step, img: g.createImageData(Math.max(now, step), H) };
+      pf.v.t = 0.5;
+      fillHistory(now);
+    }
+
+    function fillHistory(cols) {
+      const n = Math.min(cols, pf.x);
+      if (n > 0) {
+        const img = pf.img;
+        const stride = img.width * 4;
+        for (let i = 0; i < n; i++) {
+          stepVoice(pf.v, 1 / 40);
+          pf.t += 1 / 40;
+          synthColumn(pf.v, rows, img.data, (n - 1 - i) * 4, stride, pf.t);
+        }
+        wf.ctx.putImageData(img, pf.x - n, 0, 0, 0, n, rows.H);
+        pf.x -= n;
+      }
+      if (pf.x <= 0) pf = null;
     }
 
     function bracket(g, x, y, w, h, l) {
@@ -451,82 +567,83 @@
       stat.height = ov.canvas.height;
       const g = stat.getContext('2d');
       g.setTransform(d, 0, 0, d, 0, 0);
-      const { sw, sh, scW, wx, wW, wH, side } = G;
+      const { sw, sh, sx, sy, scW, scH, wx, wy, wW, wH, fs, stats: st } = G;
       if (sw < 20 || sh < 20) return;
 
       // scope well + graticule (square divisions)
       g.fillStyle = 'rgba(1, 10, 14, 0.72)';
-      g.fillRect(0, 0, scW, sh);
-      const ny = sh >= 70 ? 6 : 4;
-      const div = sh / ny;
+      g.fillRect(sx, sy, scW, scH);
+      const ny = scH >= 70 ? 6 : 4;
+      const div = scH / ny;
       const nx = Math.max(4, Math.round(scW / div));
       const dx = scW / nx;
       g.lineWidth = 1;
       g.strokeStyle = rgba('holo', 0.08);
       g.beginPath();
       for (let i = 1; i < nx; i++) {
-        const x = Math.round(i * dx) + 0.5;
-        g.moveTo(x, 0); g.lineTo(x, sh);
+        const x = sx + Math.round(i * dx) + 0.5;
+        g.moveTo(x, sy); g.lineTo(x, sy + scH);
       }
       for (let j = 1; j < ny; j++) {
-        const y = Math.round(j * div) + 0.5;
-        g.moveTo(0, y); g.lineTo(scW, y);
+        const y = sy + Math.round(j * div) + 0.5;
+        g.moveTo(sx, y); g.lineTo(sx + scW, y);
       }
       g.stroke();
       // centre axes with fifth-division ticks
-      const cy = Math.round(sh / 2) + 0.5;
-      const cx = Math.round((Math.round(nx / 2) * dx)) + 0.5;
+      const cy = sy + Math.round(scH / 2) + 0.5;
+      const cx = sx + Math.round(Math.round(nx / 2) * dx) + 0.5;
       g.strokeStyle = rgba('holo', 0.2);
       g.beginPath();
-      g.moveTo(0, cy); g.lineTo(scW, cy);
-      g.moveTo(cx, 0); g.lineTo(cx, sh);
+      g.moveTo(sx, cy); g.lineTo(sx + scW, cy);
+      g.moveTo(cx, sy); g.lineTo(cx, sy + scH);
       for (let x = 0; x < scW; x += dx / 5) {
-        g.moveTo(Math.round(x) + 0.5, cy - 2); g.lineTo(Math.round(x) + 0.5, cy + 2);
+        g.moveTo(sx + Math.round(x) + 0.5, cy - 2); g.lineTo(sx + Math.round(x) + 0.5, cy + 2);
       }
-      for (let y = 0; y < sh; y += div / 5) {
-        g.moveTo(cx - 2, Math.round(y) + 0.5); g.lineTo(cx + 2, Math.round(y) + 0.5);
+      for (let y = 0; y < scH; y += div / 5) {
+        g.moveTo(cx - 2, sy + Math.round(y) + 0.5); g.lineTo(cx + 2, sy + Math.round(y) + 0.5);
       }
       g.stroke();
       g.strokeStyle = rgba('holo', 0.3);
-      g.strokeRect(0.5, 0.5, scW - 1, sh - 1);
+      g.strokeRect(sx + 0.5, sy + 0.5, scW - 1, scH - 1);
       g.strokeStyle = rgba('holo', 0.85);
-      bracket(g, 0.5, 0.5, scW - 1, sh - 1, 5);
+      bracket(g, sx + 0.5, sy + 0.5, scW - 1, scH - 1, 5);
 
       g.textBaseline = 'alphabetic';
-      if (sh >= 56 && scW >= 90) {
-        g.font = UI(9);
+      if (scH >= 56 && scW >= 90) {
+        g.font = UI(fs);
         g.fillStyle = rgba('holo', 0.8);
-        g.fillText('CH1 · AF', 5, 11);
-        g.font = MONO(9);
+        g.fillText('CH1 · AF', sx + 5, sy + fs + 2);
+        g.font = MONO(fs);
         g.fillStyle = C.dim;
-        g.fillText('5 ms/div', 5, sh - 4);
+        g.fillText('5 ms/div', sx + 5, sy + scH - 4);
         g.textAlign = 'right';
-        g.fillText('0.5 V', scW - 5, sh - 4);
+        g.fillText('0.5 V', sx + scW - 5, sy + scH - 4);
         g.textAlign = 'left';
       }
 
       // frequency gutter
-      g.font = MONO(9);
+      g.font = MONO(fs);
       g.fillStyle = C.dim;
       g.textAlign = 'right';
       g.strokeStyle = rgba('holo', 0.35);
       g.beginPath();
       const step = wH < 60 ? 2000 : 1000;
+      const lo = Math.round(fs / 3);
       for (let f = 0; f <= FMAX; f += 500) {
-        const y = Math.round(wH * (1 - f / FMAX)) + 0.5;
+        const y = Math.min(wy + wH - 0.5, Math.max(wy + 0.5, wy + Math.round(wH * (1 - f / FMAX)) + 0.5));
         const major = f % step === 0;
-        g.moveTo(wx - (major ? 5 : 2), Math.min(wH - 0.5, Math.max(0.5, y)));
-        g.lineTo(wx, Math.min(wH - 0.5, Math.max(0.5, y)));
-        if (major) g.fillText(f === 0 ? '0' : f / 1000 + 'k', wx - 6, U.clamp(y + 3, 8, wH - 1));
+        g.moveTo(wx - (major ? 5 : 2), y);
+        g.lineTo(wx, y);
+        if (major) g.fillText(f === 0 ? '0' : f / 1000 + 'k', wx - 6, U.clamp(y + lo, wy + fs - 1, wy + wH - 1));
       }
       g.stroke();
       g.textAlign = 'left';
       // waterfall frame + 3.4 kHz channel edge
       g.strokeStyle = rgba('holo', 0.3);
-      g.strokeRect(wx - 0.5, 0.5, wW + 1, wH - 1);
+      g.strokeRect(wx - 0.5, wy + 0.5, wW + 1, wH - 1);
       g.strokeStyle = rgba('holo', 0.85);
-      bracket(g, wx - 0.5, 0.5, wW + 1, wH - 1, 5);
-      const ye = Math.round(wH * (1 - 3400 / FMAX)) + 0.5;
+      bracket(g, wx - 0.5, wy + 0.5, wW + 1, wH - 1, 5);
+      const ye = wy + Math.round(wH * (1 - 3400 / FMAX)) + 0.5;
       g.setLineDash([2, 3]);
       g.strokeStyle = rgba('amber', 0.35);
       g.beginPath();
@@ -534,7 +651,7 @@
       g.stroke();
       g.setLineDash([]);
       if (wW >= 120 && wH >= 50) {
-        g.font = MONO(9);
+        g.font = MONO(fs);
         g.fillStyle = rgba('amber', 0.7);
         g.textAlign = 'right';
         g.fillText('BW 3.4k', wx + wW - 24, ye - 3);
@@ -542,20 +659,52 @@
       }
 
       // formant / matcher stats column (wide layouts)
-      if (side) {
-        const x0 = sw - side + 8;
+      if (st) {
         g.strokeStyle = rgba('holo', 0.22);
         g.beginPath();
-        g.moveTo(sw - side + 3.5, 0); g.lineTo(sw - side + 3.5, sh);
+        g.moveTo(sw - st.side + 3.5, 0); g.lineTo(sw - st.side + 3.5, sh);
         g.stroke();
-        g.font = UI(9);
-        g.fillStyle = rgba('holo', 0.85);
-        g.fillText('FORMANTS', x0, 10);
-        g.font = MONO(9);
+        if (st.hdr) {
+          g.font = UI(st.fsS);
+          g.fillStyle = rgba('holo', 0.85);
+          g.fillText('FORMANTS', st.hx, st.fsS + 1);
+        }
+        g.font = MONO(st.fsS);
         g.fillStyle = C.dim;
-        const rows = ['F0', 'F1', 'F2', 'F3', 'VAD', 'LPC', 'CAND'];
-        const lh = Math.min(13, (sh - 16) / rows.length);
-        rows.forEach((t, i) => g.fillText(t, x0, 24 + i * lh));
+        for (const it of st.list) g.fillText(ROWLBL[it.i], it.x, it.y);
+        const b = st.psd;
+        if (b) {
+          // live spectrum slice: frequency down the side, like the waterfall; level across
+          g.strokeStyle = rgba('holo', 0.3);
+          g.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+          g.strokeStyle = rgba('holo', 0.85);
+          bracket(g, b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, 4);
+          g.font = UI(st.fsS);
+          g.fillStyle = rgba('holo', 0.85);
+          g.fillText('PSD', b.x + 5, b.y + st.fsS + 3);
+          g.font = MONO(st.fsS);
+          g.fillStyle = C.dim;
+          g.textAlign = 'right';
+          g.fillText('dB', b.x + b.w - 5, b.y + st.fsS + 3);
+          const y0 = b.y + b.top;
+          const ph = b.h - b.top - 4;
+          g.strokeStyle = rgba('holo', 0.07);
+          g.beginPath();
+          for (let i = 1; i < 4; i++) {
+            const x = Math.round(b.x + 3 + ((b.w - 6) * i) / 4) + 0.5;
+            g.moveTo(x, y0); g.lineTo(x, y0 + ph);
+          }
+          for (let f = 1000; f < FMAX; f += 1000) {
+            const y = Math.round(y0 + ph * (1 - f / FMAX)) + 0.5;
+            g.moveTo(b.x + 3, y); g.lineTo(b.x + b.w - 3, y);
+          }
+          g.stroke();
+          for (let f = 1000; f < FMAX; f += 1000) {
+            const y = Math.round(y0 + ph * (1 - f / FMAX));
+            g.fillText(f / 1000 + 'k', b.x + b.w - 5, y - 3);
+          }
+          g.textAlign = 'left';
+        }
       }
     }
 
@@ -580,7 +729,7 @@
         g.fillRect(0, dy > 0 ? 0 : H + dy, W, Math.abs(dy));
       }
       markers.push({ col: colN, text: 'HOP ' + next, color: 'amber' });
-      hopLabel = { text: `FREQ HOP → ${next}`, t0: now, until: now + 2000 };
+      hopLabel = { text: `FREQ HOP → ${next}`, short: `HOP ${next}`, tiny: next, t0: now, until: now + 2000 };
       U.scramble(freqEl, next, { duration: RM ? 0 : 520, chars: '0123456789', r: R });
       ctx.meta(`${next} MHz`);
       if (evasive || hopCount % 2 === 1) ctx.alert('info', `FREQ HOP → ${next} MHz · ${evasive ? 'TARGET EVADING · ' : ''}RE-LOCKED`);
@@ -687,18 +836,50 @@
 
     function label(g, text, x, y, col, bg = true) {
       const w = g.measureText(text).width;
+      const fs = G.fs;
       if (bg) {
         g.fillStyle = 'rgba(2, 5, 10, 0.78)';
-        g.fillRect(x - 2, y - 8, w + 4, 11);
+        g.fillRect(x - 2, y - fs + 1, w + 4, fs + 2);
       }
       g.fillStyle = col;
       g.fillText(text, x, y);
       return w;
     }
 
+    function drawPsd(g, b) {
+      const n = hold.length;
+      const H = rows.H;
+      const x0 = b.x + 3;
+      const pw = b.w - 6;
+      const y0 = b.y + b.top;
+      const ph = b.h - b.top - 4;
+      g.beginPath();
+      g.moveTo(x0, y0);
+      for (let i = 0; i < n; i++) {
+        const v = U.clamp(dbBuf[Math.min(H - 1, Math.floor((i / (n - 1)) * (H - 1)))], 0, 1);
+        hold[i] = v > hold[i] ? v : Math.max(v, hold[i] - 0.005);
+        g.lineTo(x0 + v * pw, y0 + (i / (n - 1)) * ph);
+      }
+      g.lineTo(x0, y0 + ph);
+      g.fillStyle = rgba('holo', 0.12);
+      g.fill();
+      g.strokeStyle = voice.jam > 0 ? rgba('neon', 0.8) : rgba('ice', 0.75);
+      g.lineWidth = 1;
+      g.stroke();
+      g.strokeStyle = rgba('amber', 0.5);
+      g.beginPath();
+      for (let i = 0; i < n; i++) {
+        const x = x0 + hold[i] * pw;
+        const y = y0 + (i / (n - 1)) * ph;
+        if (i) g.lineTo(x, y);
+        else g.moveTo(x, y);
+      }
+      g.stroke();
+    }
+
     function draw(now) {
       const g = ov.ctx;
-      const { sw, sh, scW, wx, wW, wH, side } = G;
+      const { sw, sh, sx, sy, scW, scH, wx, wy, wW, wH, fs, stats: st } = G;
       ov.clear();
       if (sw < 20 || sh < 20) return;
       g.drawImage(stat, 0, 0, sw, sh);
@@ -708,11 +889,11 @@
       gi = (gi + 1) % GL;
       scopeTrace(n, glow[gi]);
       glowN[gi] = n;
-      const cy = sh / 2;
-      const amp = sh * 0.4;
+      const cy = sy + scH / 2;
+      const amp = scH * 0.4;
       g.save();
       g.beginPath();
-      g.rect(1, 1, scW - 2, sh - 2);
+      g.rect(sx + 1, sy + 1, scW - 2, scH - 2);
       g.clip();
       g.lineJoin = 'round';
       g.lineWidth = 1;
@@ -720,10 +901,10 @@
         const b = (gi - j + GL) % GL;
         if (!glowN[b]) continue;
         g.strokeStyle = rgba('holo', 0.34 - j * 0.065);
-        tracePath(g, glow[b], glowN[b], 3, scW - 6, cy, amp);
+        tracePath(g, glow[b], glowN[b], sx + 3, scW - 6, cy, amp);
         g.stroke();
       }
-      tracePath(g, glow[gi], n, 3, scW - 6, cy, amp);
+      tracePath(g, glow[gi], n, sx + 3, scW - 6, cy, amp);
       g.strokeStyle = rgba('holo', 0.22);
       g.lineWidth = 3.2;
       g.stroke();
@@ -732,24 +913,28 @@
       g.stroke();
       g.restore();
       // trigger marker + voice activity lamp
+      const tx = sx + scW;
       g.fillStyle = rgba('amber', 0.85);
       g.beginPath();
-      g.moveTo(scW - 1, cy); g.lineTo(scW - 5, cy - 3); g.lineTo(scW - 5, cy + 3);
+      g.moveTo(tx - 1, cy); g.lineTo(tx - 5, cy - 3); g.lineTo(tx - 5, cy + 3);
       g.fill();
       const vad = voice.talking && voice.env > 0.05;
-      if (sh >= 56 && scW >= 90) {
-        g.font = UI(9);
+      if (scH >= 56 && scW >= 90) {
+        g.font = UI(fs);
+        const tw = g.measureText('VAD').width;
+        const ls = fs - 4;
         g.fillStyle = vad ? C.phosphor : C.faint;
-        g.fillRect(scW - 30, 5, 5, 5);
-        g.fillText('VAD', scW - 22, 11);
+        g.fillRect(tx - 8 - tw - ls, sy + fs + 1 - ls, ls, ls);
+        g.fillText('VAD', tx - 5 - tw, sy + fs + 2);
       } else {
         g.fillStyle = vad ? C.phosphor : C.faint;
-        g.fillRect(scW - 8, 4, 4, 4);
+        g.fillRect(tx - 8, sy + 4, 4, 4);
       }
 
       // waterfall overlays: scrolled event markers, live formant ticks, labels
-      g.font = MONO(9);
+      g.font = MONO(fs);
       const right = wx + wW - 1;
+      let lim = Infinity; // left edge of the newest label drawn so far
       for (let i = markers.length - 1; i >= 0; i--) {
         const m = markers[i];
         const x = right - (colN - m.col) + 0.5;
@@ -761,74 +946,95 @@
         g.strokeStyle = rgba(m.color, 0.7);
         g.setLineDash([2, 2]);
         g.beginPath();
-        g.moveTo(x, 1); g.lineTo(x, wH - 1);
+        g.moveTo(x, wy + 1); g.lineTo(x, wy + wH - 1);
         g.stroke();
         g.setLineDash([]);
         if (wH >= 40) {
           const tw = g.measureText(m.text).width;
           const lx = Math.min(x + 3, right - tw - 26);
-          if (lx > wx + 2) label(g, m.text, lx, wH - 4, rgba(m.color, 0.95));
+          if (lx > wx + 2 && lx + tw + 6 < lim) {
+            label(g, m.text, lx, wy + wH - 4, rgba(m.color, 0.95));
+            lim = lx;
+          }
         }
       }
       if (voice.env > 0.08 && voice.jam <= 0 && wW > 30) {
         let ly = Infinity; // F1 is lowest; skip a label that would sit on the one below it
+        const lo = Math.round(fs / 3);
         for (let k = 0; k < 3; k++) {
-          const y = wH * (1 - voice.F[k] / FMAX);
+          const y = wy + wH * (1 - voice.F[k] / FMAX);
           g.fillStyle = C.ice;
           g.fillRect(right - 5, Math.round(y), 5, 1);
-          if (wH >= 70 && wW >= 110 && ly - y >= 10) {
+          if (wH >= 70 && wW >= 110 && ly - y >= fs + 1) {
             ly = y;
-            label(g, 'F' + (k + 1), right - 20, U.clamp(y + 3, 9, wH - 2), rgba('ice', 0.85));
+            const t = 'F' + (k + 1);
+            label(g, t, right - 9 - g.measureText(t).width, U.clamp(y + lo, wy + fs, wy + wH - 2), rgba('ice', 0.85));
           }
         }
       }
       if (wH >= 40 && wW >= 90) {
-        g.fillStyle = rgba('holo', 0.75);
-        g.font = UI(9);
-        label(g, 'SPECTROGRAM', wx + 4, 11, rgba('holo', 0.8));
+        g.font = UI(fs);
+        label(g, 'SPECTROGRAM', wx + 4, wy + fs + 2, rgba('holo', 0.8));
       }
 
       // hop banner
       if (hopLabel && now < hopLabel.until) {
         const k = U.clamp((now - hopLabel.t0) / 180, 0, 1);
-        g.font = MONO(wW >= 150 ? 10 : 9);
-        const tw = g.measureText(hopLabel.text).width;
+        const fh = wW >= 150 ? fs + 1 : fs;
+        g.font = MONO(fh);
+        let text = hopLabel.text;
+        let tw = g.measureText(text).width;
+        for (const alt of [hopLabel.short, hopLabel.tiny]) {
+          if (tw + 12 <= wW) break;
+          text = alt;
+          tw = g.measureText(text).width;
+        }
         const x = wx + Math.max(3, (wW - tw) / 2);
-        const y = Math.round(wH * 0.42);
+        const y = wy + Math.round(wH * 0.42);
         const jit = !RM && now - hopLabel.t0 < 380 ? R.int(-3, 3) : 0;
         g.globalAlpha = k;
         g.fillStyle = 'rgba(20, 12, 0, 0.82)';
-        g.fillRect(x - 5 + jit, y - 10, tw + 10, 14);
+        g.fillRect(x - 5 + jit, y - fh, tw + 10, fh + 4);
         g.strokeStyle = rgba('amber', 0.8);
-        g.strokeRect(x - 5.5 + jit, y - 10.5, tw + 11, 15);
+        g.strokeRect(x - 5.5 + jit, y - fh - 0.5, tw + 11, fh + 5);
         g.fillStyle = C.amber;
-        g.fillText(hopLabel.text, x + jit, y);
+        g.fillText(text, x + jit, y);
         g.globalAlpha = 1;
       } else hopLabel = null;
 
       // jamming stamp
       if (voice.jam > 0) {
         const on = RM || Math.floor(now / 160) % 2 === 0;
-        g.font = DISP(wH >= 60 ? 12 : 10);
-        const t = 'JAMMING';
-        const tw = g.measureText(t).width;
+        let fj = wH >= 60 ? (fs > 9 ? 16 : 12) : 10;
+        let t = 'JAMMING';
+        g.font = DISP(fj);
+        let tw = g.measureText(t).width;
+        while (tw + 18 > wW && fj > 9) {
+          fj--;
+          g.font = DISP(fj);
+          tw = g.measureText(t).width;
+        }
+        if (tw + 18 > wW) {
+          t = 'ECM';
+          tw = g.measureText(t).width;
+        }
         const x = wx + (wW - tw) / 2;
-        const y = wH / 2 + 5;
+        const y = wy + wH / 2 + Math.round(fj * 0.4);
         g.fillStyle = 'rgba(30, 0, 12, 0.72)';
-        g.fillRect(x - 8, y - 14, tw + 16, 19);
+        g.fillRect(x - 8, y - fj - 2, tw + 16, fj + 7);
         g.strokeStyle = on ? C.neon : rgba('neon', 0.4);
-        g.strokeRect(x - 8.5, y - 14.5, tw + 17, 20);
+        g.strokeRect(x - 8.5, y - fj - 2.5, tw + 17, fj + 8);
         g.fillStyle = on ? C.neon : rgba('neon', 0.55);
         g.fillText(t, x, y);
-        if (sh >= 50) {
+        if (scH >= 50) {
           // over the scope's scale labels, on its own plate
-          g.font = MONO(9);
+          g.font = MONO(fs);
           const t2 = 'ECM · WIDEBAND';
           const w2 = g.measureText(t2).width;
           g.fillStyle = 'rgba(30, 0, 12, 0.9)';
-          g.fillRect(2, sh - 15, scW - 4, 13);
+          g.fillRect(sx + 2, sy + scH - fs - 6, scW - 4, fs + 4);
           g.fillStyle = C.neon;
-          g.fillText(t2, (scW - w2) / 2, sh - 5);
+          g.fillText(t2, sx + (scW - w2) / 2, sy + scH - 5);
         }
       }
 
@@ -837,32 +1043,46 @@
         const age = now - stamp.t0;
         const blink = !RM && age < 900 && Math.floor(age / 110) % 2 === 1;
         const big = wW >= 150 && wH >= 60;
+        const huge = big && fs > 9 && wW >= 300;
+        const fd = huge ? 16 : big ? 11 : 9;
+        const fu = huge ? 11 : 9;
         const t1 = 'VOICEPRINT MATCH';
-        const t2 = `${stamp.code} · ${stamp.conf.toFixed(2)}`;
-        g.font = DISP(big ? 11 : 9);
-        const w2 = g.measureText(t2).width;
-        g.font = UI(9);
+        let t2 = `${stamp.code} · ${stamp.conf.toFixed(2)}`;
+        let f2 = DISP(fd);
+        g.font = f2;
+        let w2 = g.measureText(t2).width;
+        if (w2 + 12 > wW) {
+          // a sliver of waterfall: the codename alone, in the narrower mono face if need be
+          for (const [f, t] of [[DISP(9), stamp.code], [MONO(9), `${stamp.code} ${stamp.conf.toFixed(2)}`], [MONO(9), stamp.code]]) {
+            f2 = f;
+            t2 = t;
+            g.font = f;
+            w2 = g.measureText(t).width;
+            if (w2 + 12 <= wW) break;
+          }
+        }
+        g.font = UI(fu);
         const w1 = g.measureText(t1).width;
-        const bw = Math.min(wW - 8, Math.max(w1, w2) + 16);
-        const bh = big ? 34 : wH >= 44 ? 28 : 18;
+        const bw = Math.min(wW - 8, Math.max(w1 + 16 <= wW - 8 ? w1 : 0, w2) + (huge ? 28 : 16));
+        const bh = huge ? 48 : big ? 34 : wH >= 44 && w1 + 16 <= wW - 8 ? 28 : 18;
         const bx = wx + (wW - bw) / 2;
-        const by = (wH - bh) / 2;
+        const by = wy + (wH - bh) / 2;
         g.fillStyle = 'rgba(28, 0, 6, 0.84)';
         g.fillRect(bx, by, bw, bh);
         g.strokeStyle = blink ? C.ice : C.threat;
         g.lineWidth = 1;
         g.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
         g.lineWidth = 2;
-        bracket(g, bx - 1, by - 1, bw + 2, bh + 2, 5);
+        bracket(g, bx - 1, by - 1, bw + 2, bh + 2, huge ? 8 : 5);
         g.lineWidth = 1;
         if (bh >= 28) {
           g.fillStyle = rgba('threat', 0.9);
-          g.fillText(t1, bx + (bw - w1) / 2, by + 11);
-          g.font = DISP(big ? 11 : 9);
+          g.fillText(t1, bx + (bw - w1) / 2, by + fu + 2 + (huge ? 3 : 0));
+          g.font = f2;
           g.fillStyle = blink ? C.ice : C.threat;
-          g.fillText(t2, bx + (bw - w2) / 2, by + bh - 7);
+          g.fillText(t2, bx + (bw - w2) / 2, by + bh - (huge ? 9 : 7));
         } else {
-          g.font = DISP(9);
+          g.font = f2;
           g.fillStyle = C.threat;
           g.fillText(t2, bx + (bw - w2) / 2, by + 13);
         }
@@ -871,9 +1091,8 @@
       }
 
       // stats column
-      if (side) {
-        const x1 = sw - 6;
-        const rows = [
+      if (st) {
+        const vals = [
           vad ? Math.round(voice.f0) + ' Hz' : '— Hz',
           vad ? String(Math.round(voice.F[0])) : '—',
           vad ? String(Math.round(voice.F[1])) : '—',
@@ -882,14 +1101,15 @@
           '12·AR',
           U.pad(Math.max(1, Math.round(4096 * Math.pow(1 - U.clamp(vp.v, 0, 0.999), 3.2))), 4),
         ];
-        const lh = Math.min(13, (sh - 16) / rows.length);
-        g.font = MONO(9);
+        g.font = MONO(st.fsS);
         g.textAlign = 'right';
-        rows.forEach((t, i) => {
+        for (const it of st.list) {
+          const i = it.i;
           g.fillStyle = i === 4 ? (vad ? C.phosphor : C.dim) : i === 6 && vp.state === 'match' ? C.threat : C.ice;
-          g.fillText(t, x1, 24 + i * lh);
-        });
+          g.fillText(vals[i], it.xr, it.y);
+        }
         g.textAlign = 'left';
+        if (st.psd && hold && dbBuf) drawPsd(g, st.psd);
       }
     }
 
@@ -898,16 +1118,21 @@
     function pushColumn() {
       const W = wf.canvas.width;
       const H = wf.canvas.height;
-      if (W < 4 || H < 4 || !colImg) return;
+      if (W < 4 || H < 4 || !colImg || !rows || rows.H !== H) return;
       const g = wf.ctx;
       g.setTransform(1, 0, 0, 1, 0, 0);
       g.drawImage(wf.canvas, 1, 0, W - 1, H, 0, 0, W - 1, H);
-      synthColumn(voice, H, colImg.data, 0, 4, simT);
+      synthColumn(voice, rows, colImg.data, 0, 4, simT, dbBuf);
       g.putImageData(colImg, W - 1, 0);
       colN++;
       if (colN % FPS === 0) {
         g.fillStyle = rgba('holo', 0.55);
         g.fillRect(W - 1, H - 3, 1, 3);
+      }
+      if (pf) {
+        // the unfilled history scrolled left with everything else
+        pf.x--;
+        fillHistory(pf.step);
       }
     }
 
@@ -975,11 +1200,13 @@
         lastSec = sec;
         tcEl.textContent = `T+${U.pad(Math.floor(sec / 3600))}:${U.pad(Math.floor(sec / 60) % 60)}:${U.pad(sec % 60)}`;
       }
+      // narrow panels get the short forms so the status never runs off the meter row
+      const code = S.target.codename || 'WRAITH';
       const st =
-        vp.state === 'match' ? `MATCH ${S.target.codename || 'WRAITH'}` :
-        vp.state === 'decay' ? 'LOST · RE-ACQ' :
+        vp.state === 'match' ? (narrow ? `ID ${code}` : `MATCH ${code}`) :
+        vp.state === 'decay' ? (narrow ? 'RE-ACQ' : 'LOST · RE-ACQ') :
         jam ? 'NO SIGNAL' :
-        vp.v > 0.62 ? 'CORRELATING' : 'HUNTING';
+        vp.v > 0.62 ? (narrow ? 'CORREL' : 'CORRELATING') : 'HUNTING';
       if (vpStat.textContent !== st) vpStat.textContent = st;
     }
 

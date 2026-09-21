@@ -116,6 +116,9 @@ redirects them.
 | `decrypt:complete` | decrypt | `{key, file}` |
 | `voice:match` | spectrum | `{codename, confidence, phrase}` |
 | `fonts:ready` | core | `{}` — webfonts loaded; re-render any cached text layers |
+| `ui:layout` | terminal cmd `layout` | `{source}` — toggle LAYOUT mode (the shell handles it) |
+| `layout:mode` | shell | `{editing}` — LAYOUT mode opened or locked; panel bodies get no pointer events while editing |
+| `layout:change` | shell | `{id}` — a panel was moved or resized (`id` null for reset/lock). Drop cached client rects. Size changes still arrive through `resize(w, h)` |
 | `boot` | core | `{panels}` |
 
 ## Look & feel
@@ -177,6 +180,13 @@ The 1920×1080 column is the hero size, so it must look superb. At 1280×720 the
 legible and uncluttered: drop secondary detail rather than shrinking text below 9 px. Aspect
 ratios change between layouts (for example, trace is tall and narrow on desktop but wide on
 phone), so pick a layout per aspect.
+
+In LAYOUT mode (desktop only) the viewer can resize any panel on a 24×12 snap grid, from its
+minimum (in cells, `HD.layout.min(id)`, 2–6 wide and 2–4 tall) up to the whole grid. A cell is
+about 52×51 px at 1280×700 and 79×83 px at 1920×1080. So every panel must also render well from
+roughly 98×96 px up to 1888×986 px and at strip aspects (24×2, 2×12). It must also survive
+repeated `resize` calls at runtime. Panel state may reset on a resize, but the render must not
+break.
 
 ## Performance budget
 

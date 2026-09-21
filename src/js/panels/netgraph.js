@@ -20,6 +20,10 @@
     ];
     // preferred bridge pairs: the four edges of the quad (avoid a busy diagonal X)
     const BRIDGE_PAIRS = [[0, 1], [0, 2], [1, 3], [2, 3], [0, 1], [2, 3], [0, 3]];
+    // Strips lay the clusters out in a staggered line in this cycle order, which keeps the quad's
+    // edges as neighbours (proxy → grid → target → C2); a 2x2 would pile clusters onto each other.
+    const QUAD = [[0.23, 0.31], [0.77, 0.31], [0.23, 0.73], [0.77, 0.73]];
+    const RING = [2, 0, 1, 3];
     const OS = ['NYX/4.2', 'HELIOS 9', 'RTK-7', 'VXKERNEL', 'DARKBSD', 'SCADA-OS', 'MOBI-X', 'VANTA SRV'];
     const PORTS = [22, 80, 443, 445, 3389, 5900, 8080, 1883, 502, 8443, 23, 161];
 
@@ -50,16 +54,49 @@
     let pointer = { x: -1, y: -1, in: false };
     let rectDirty = true;
     let rect = null;
+    let arr = 'quad'; // cluster arrangement: 'quad' | 'row' | 'col'
+    let fs = 9; // label type size; grows on big panels
+    let pw = 0, ph = 0, nr = 0; // size + node radius the mesh was last laid out for
 
     const HEX = [];
     for (let i = 0; i < 6; i++) HEX.push([Math.cos((i / 6) * Math.PI * 2 - Math.PI / 2), Math.sin((i / 6) * Math.PI * 2 - Math.PI / 2)]);
 
+    const UIF = (px) => `600 ${px}px "Chakra Petch", "Segoe UI", sans-serif`;
+    const MONOF = (px) => `500 ${px}px "JetBrains Mono", Consolas, monospace`;
+
     function nodeCount() {
       const area = ctx.width * ctx.height;
-      return U.clamp(Math.round(area / 2200), 34, 58);
+      // a narrow column gets a lighter mesh so each cluster keeps a gap for its label
+      return U.clamp(Math.round(area / 2200), arr === 'quad' ? 34 : 26, 58);
     }
     function nodeR() {
-      return U.clamp(Math.min(ctx.width, ctx.height) / 62, 2.4, 4.2);
+      return U.clamp(Math.min(ctx.width, ctx.height) / 62, 2.4, 6);
+    }
+    function arrangeFor(w, h) {
+      return w > h * 2.3 ? 'row' : h > w * 2 ? 'col' : 'quad';
+    }
+    // Cluster centres (fractions of the body) for the current size.
+    function arrange(w, h) {
+      arr = arrangeFor(w, h);
+      fs = U.clamp(Math.round(Math.min(w, h) / 30), 9, 12);
+      const top = padTop(w, h) + 10, bot = h - padBot() - 10;
+      CLUSTERS.forEach((cl, ci) => {
+        if (arr === 'quad') {
+          cl.fx = QUAD[ci][0];
+          cl.fy = QUAD[ci][1];
+          return;
+        }
+        const k = RING.indexOf(ci);
+        const along = (k + 0.5) / 4;
+        const across = 0.5 + (k % 2 ? 0.1 : -0.1);
+        if (arr === 'row') {
+          cl.fx = along;
+          cl.fy = (top + (bot - top) * across) / h;
+        } else {
+          cl.fx = across;
+          cl.fy = (top + (bot - top) * along) / h;
+        }
+      });
     }
 
     function build() {
@@ -69,8 +106,11 @@
       edges = [];
       const per = Math.floor(N / CLUSTERS.length);
       const counts = CLUSTERS.map((_, i) => (i === CLUSTERS.length - 1 ? N - per * (CLUSTERS.length - 1) : per));
-      const rad = Math.min(w, h) * 0.2;
+      const rad = arr === 'row' ? Math.min(w / 4, h) * 0.3 : arr === 'col' ? Math.min(w, h / 4) * 0.3 : Math.min(w, h) * 0.2;
       clLabel.forEach((l) => { l.set = false; });
+      pw = w;
+      ph = h;
+      nr = nodeR();
 
       CLUSTERS.forEach((cl, ci) => {
         const cx = cl.fx * w, cy = cl.fy * h;
@@ -111,11 +151,11 @@
       ownedCount = 1;
 
       // Mark key (labelled) nodes round-robin across clusters — a wall of IPs in one corner reads badly.
-      let budget = ctx.width < 150 ? 0 : ctx.width < 230 ? 4 : 6;
+      let budget = w < 150 ? 0 : w < 230 ? 4 : w * h > 600000 ? 10 : w >= 900 ? 8 : 6;
       const pool = CLUSTERS.map((_, ci) => nodes.map((n, i) => i)
         .filter((i) => nodes[i].cl === ci && i !== entry)
         .sort((a, b) => adj[b].length - adj[a].length));
-      for (let round = 0; round < 2 && budget > 0; round++) {
+      for (let round = 0; round < 3 && budget > 0; round++) {
         for (let ci = 0; ci < CLUSTERS.length && budget > 0; ci++) {
           const i = pool[ci][round];
           if (i == null) continue;
@@ -171,8 +211,10 @@
       // 1) primary ring per cluster (keeps everyone at low degree first)
       ordered.forEach((ord) => { for (let i = 0; i < ord.length; i++) link(ord[i], ord[(i + 1) % ord.length]); });
 
-      // 2) inter-cluster bridges, biased to adjacent surfaces (the quad edges)
-      for (const [ca, cb] of rng.shuffle(BRIDGE_PAIRS)) {
+      // 2) inter-cluster bridges, biased to adjacent surfaces (the quad edges, or line neighbours)
+      const [ra, rb, rc, rd] = RING;
+      const pairs = arr === 'quad' ? BRIDGE_PAIRS : [[ra, rb], [rb, rc], [rc, rd], [ra, rb], [rc, rd], [rb, rc], [ra, rd]];
+      for (const [ca, cb] of rng.shuffle(pairs)) {
         const A = ordered[ca], B = ordered[cb];
         if (A.length && B.length) { link(rng.pick(A), rng.pick(B)); link(rng.pick(A), rng.pick(B)); }
       }
@@ -217,8 +259,13 @@
       const drift = ctx.reducedMotion ? 0.4 : 1;
       // personal space scales with the area each node gets, so clusters fill their quadrant
       // instead of collapsing into clumps
-      const minD = U.clamp(Math.sqrt((w * h) / Math.max(1, nodes.length)) * 0.62, nodeR() * 3.4, 44);
+      const minD = U.clamp(Math.sqrt((w * h) / Math.max(1, nodes.length)) * 0.62, nr * 3.4, 100);
       const minD2 = minD * minD;
+      // Strips pull weakly along their long axis so each cluster spreads into its slot; big panels
+      // pull more softly overall so clusters fill their quadrant instead of huddling in it.
+      const soft = U.clamp(300 / Math.min(w, h), 0.25, 1);
+      const kx = (arr === 'row' ? 0.4 : 1.2) * soft, ky = (arr === 'col' ? 0.4 : 1.2) * soft;
+      const yTop = padTop(w, h), yBot = h - padBot();
 
       // short-range repulsion (all pairs, capped count is tiny)
       for (let i = 0; i < nodes.length; i++) {
@@ -252,8 +299,8 @@
         const n = nodes[i];
         const cl = CLUSTERS[n.cl];
         const cx = cl.fx * w, cy = cl.fy * h;
-        n.vx += (cx - n.x) * 1.2 * dt;
-        n.vy += (cy - n.y) * 1.2 * dt;
+        n.vx += (cx - n.x) * kx * dt;
+        n.vy += (cy - n.y) * ky * dt;
         const idle = (0.5 - temp * 0.5);
         n.vx += Math.sin(t * 0.0006 + n.seed) * 3.2 * idle * drift * dt;
         n.vy += Math.cos(t * 0.0005 + n.seed * 1.3) * 3.2 * idle * drift * dt;
@@ -261,7 +308,7 @@
         n.vx *= damp; n.vy *= damp;
         n.x += n.vx * dt; n.y += n.vy * dt;
         n.x = U.clamp(n.x, 8, w - 8);
-        n.y = U.clamp(n.y, padTop(w, h), h - 20); // keep clear of the compromise bar
+        n.y = U.clamp(n.y, yTop, yBot); // keep clear of the compromise bar
         if (n.owned && n.fall < 1) n.fall = Math.min(1, n.fall + dt * 3);
       }
       temp = Math.max(0, temp - dt * 0.35);
@@ -373,6 +420,8 @@
     el.addEventListener('pointerdown', onDown);
     addEventListener('scroll', () => { rectDirty = true; }, { passive: true, capture: true });
     addEventListener('resize', () => { rectDirty = true; }, { passive: true });
+    ctx.on('layout:change', () => { rectDirty = true; });
+    ctx.on('layout:settled', () => { rectDirty = true; });
 
     function pick(px, py) {
       let best = -1, bd = 1e9;
@@ -513,7 +562,7 @@
         g.save();
         g.strokeStyle = ctx.rgba('threat', (1 - p) * 0.9);
         g.lineWidth = 1.6;
-        g.beginPath(); g.arc(bs.x, bs.y, bs.r + p * 22, 0, Math.PI * 2); g.stroke();
+        g.beginPath(); g.arc(bs.x, bs.y, bs.r + p * 22 * (fs / 9), 0, Math.PI * 2); g.stroke();
         g.restore();
       }
 
@@ -526,8 +575,9 @@
 
       // cluster labels first (they win the space). Each rides just above its cluster, smoothed so
       // the idle drift never makes it jitter, with a live owned count when there is room.
-      const topReserve = hudFull(w, h) ? 22 : 9;
+      const topReserve = hudFull(w, h) ? 13 + fs : fs;
       const withCount = w >= 230;
+      const lb = fs + 3; // label plate height
       for (let ci = 0; ci < CLUSTERS.length; ci++) {
         let sx = 0, n = 0, own = 0, top = 1e9;
         for (const nd of nodes) {
@@ -538,59 +588,71 @@
         }
         if (!n) continue;
         const L = clLabel[ci];
-        const tx = sx / n, ty = top - 9;
+        const tx = sx / n, ty = top - fs;
         if (!L.set) { L.x = tx; L.y = ty; L.set = true; }
         L.x += (tx - L.x) * 0.06;
         L.y += (ty - L.y) * 0.06;
         const name = w < 150 ? CLUSTERS[ci].name.split(' ')[0] : CLUSTERS[ci].name;
         const cnt = withCount ? `${own}/${n}` : '';
         g.textBaseline = 'middle';
-        g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+        g.font = UIF(fs);
         trySpace(1.1);
         const nw = g.measureText(name).width;
         trySpace(0);
-        g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+        g.font = MONOF(fs);
         const cw = cnt ? g.measureText(cnt).width + 5 : 0;
         const tw = nw + cw;
         const lx = U.clamp(L.x - tw / 2, 5, w - tw - 5);
-        const ly = U.clamp(L.y, topReserve, h - 24);
+        const ly = U.clamp(L.y, topReserve, h - padBot() - 4);
         g.fillStyle = ctx.rgba('bg', 0.6);
-        g.fillRect(lx - 4, ly - 6, tw + 7, 12);
+        g.fillRect(lx - 4, ly - lb / 2, tw + 7, lb);
         g.fillStyle = ctx.rgba(ci === 1 ? 'holo' : 'holo2', 0.8);
-        g.fillRect(lx - 4, ly - 6, 1.5, 12);
+        g.fillRect(lx - 4, ly - lb / 2, 1.5, lb);
         g.textAlign = 'left';
-        g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+        g.font = UIF(fs);
         trySpace(1.1);
         g.fillStyle = ctx.rgba('holo', 0.72);
         g.fillText(name, lx, ly);
         trySpace(0);
         if (cnt) {
-          g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+          g.font = MONOF(fs);
           g.fillStyle = own === n ? ctx.rgba('neon', 0.95) : own ? ctx.rgba('neon', 0.75) : ctx.rgba('text', 0.5);
           g.fillText(cnt, lx + nw + 5, ly + 0.5);
         }
-        placed.push({ x: lx - 4, y: ly - 6, w: tw + 7, h: 12 });
+        placed.push({ x: lx - 4, y: ly - lb / 2, w: tw + 7, h: lb });
       }
 
       // node labels: entry, then owned key, then key. Skip any that would collide.
       if (ctx.width >= 150) {
-        g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+        g.font = MONOF(fs);
         g.textBaseline = 'middle';
         const order = nodes.map((n, i) => i)
           .filter((i) => nodes[i].key || nodes[i].entry)
           .sort((a, a2) => rank(nodes[a2]) - rank(nodes[a]));
+        // Labelled nodes are obstacles for the IP labels, so one never runs over a neighbour's
+        // marker. The entry label only has to dodge other labels, and is always shown.
+        const nodeBox = [];
+        for (const i of order) {
+          const n = nodes[i];
+          nodeBox.push({ x: n.x - n.r - 1, y: n.y - n.r - 1, w: n.r * 2 + 2, h: n.r * 2 + 2, i });
+        }
+        const onNode = (x, y, bw, bh, self) => {
+          for (const p of nodeBox) if (p.i !== self && x < p.x + p.w && x + bw > p.x && y < p.y + p.h && y + bh > p.y) return true;
+          return false;
+        };
         for (const i of order) {
           const n = nodes[i];
           const label = n.entry ? 'ENTRY·' + n.ip : (n.owned ? n.host : n.ip);
           const tw = g.measureText(label).width;
-          const bh = 11;
+          const bh = fs + 2;
           // try right, then left of the node
-          const cands = [[n.x + n.r + 3, n.y], [n.x - n.r - 3 - tw, n.y]];
+          const cands = [[n.x + n.r + 3, n.y], [n.x - n.r - 3 - tw, n.y]].map(([cx, cy]) =>
+            [U.clamp(cx, 2, w - tw - 2), U.clamp(cy - bh / 2, 2, h - bh - 2)]);
           let put = null;
-          for (const [cx, cy] of cands) {
-            const bx = U.clamp(cx, 2, w - tw - 2), by = U.clamp(cy - bh / 2, 2, h - bh - 2);
-            if (!hits(bx, by, tw + 2, bh)) { put = [bx, by]; break; }
+          for (const [bx, by] of cands) {
+            if (!hits(bx, by, tw + 2, bh) && (n.entry || !onNode(bx, by, tw + 2, bh, i))) { put = [bx, by]; break; }
           }
+          if (!put && n.entry) put = cands[0];
           if (!put) continue;
           const [bx, by] = put;
           g.fillStyle = ctx.rgba('bg', 0.55);
@@ -604,7 +666,7 @@
 
       // contested tags: the owned nodes the intrusion is clawing back
       if (contested.length && w >= 150) {
-        g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+        g.font = UIF(fs);
         g.textAlign = 'center';
         g.textBaseline = 'middle';
         for (const c of contested) {
@@ -613,13 +675,14 @@
           const tw = g.measureText('CONTESTED').width;
           const bx = U.clamp(n.x - tw / 2, 2, w - tw - 2);
           // above the node, else below, so it never sits on the entry/IP labels
-          const ys = [n.y - n.r - 13, n.y + n.r + 3].map((y) => U.clamp(y, 2, h - 12));
-          const by = ys.find((y) => !hits(bx - 2, y, tw + 4, 11)) ?? ys[0];
-          placed.push({ x: bx - 2, y: by, w: tw + 4, h: 11 });
+          const bh = fs + 2;
+          const ys = [n.y - n.r - bh - 2, n.y + n.r + 3].map((y) => U.clamp(y, 2, h - bh - 1));
+          const by = ys.find((y) => !hits(bx - 2, y, tw + 4, bh)) ?? ys[0];
+          placed.push({ x: bx - 2, y: by, w: tw + 4, h: bh });
           g.fillStyle = ctx.rgba('bg', 0.75);
-          g.fillRect(bx - 2, by, tw + 4, 11);
+          g.fillRect(bx - 2, by, tw + 4, bh);
           g.fillStyle = ctx.rgba('amber', 0.95);
-          g.fillText('CONTESTED', bx + tw / 2, by + 6);
+          g.fillText('CONTESTED', bx + tw / 2, by + bh / 2 + 0.5);
         }
       }
 
@@ -629,10 +692,10 @@
       // no-route flash
       if (noRoute) {
         const p = noRoute.t / 700;
-        g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+        g.font = UIF(fs);
         g.textAlign = 'center';
         g.fillStyle = ctx.rgba('threat', 1 - p);
-        g.fillText('NO ROUTE', noRoute.x, noRoute.y - 12);
+        g.fillText('NO ROUTE', noRoute.x, noRoute.y - fs - 3);
         g.strokeStyle = ctx.rgba('threat', (1 - p) * 0.8);
         g.lineWidth = 1;
         g.beginPath(); g.arc(noRoute.x, noRoute.y, 6 + p * 8, 0, Math.PI * 2); g.stroke();
@@ -656,10 +719,10 @@
         g.strokeStyle = ctx.rgba('phosphor', 0.9);
         g.lineWidth = 1.4;
         g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
-        g.font = '600 10px "Chakra Petch", "Segoe UI", sans-serif';
+        g.font = UIF(fs + 1);
         g.textAlign = 'center';
         g.fillStyle = ctx.rgba('phosphor', 0.9);
-        if (h - y > 16) g.fillText('RE-MAPPING MESH…', w / 2, Math.min(h - 8, y + 14));
+        if (h - y > fs + 7) g.fillText('RE-MAPPING MESH…', w / 2, Math.min(h - 8, y + fs + 5));
       }
     }
 
@@ -667,7 +730,9 @@
     function rank(n) { return n.entry ? 3 : n.owned ? 2 : 1; }
     function hudFull(w, h) { return w >= 300 && h >= 250; }
     // room for the HUD line and the top clusters' labels
-    function padTop(w, h) { return hudFull(w, h) ? 36 : 24; }
+    function padTop(w, h) { return hudFull(w, h) ? 27 + fs : 15 + fs; }
+    // room for the last-owned readout and the compromise bar
+    function padBot() { return fs + 11; }
 
     function isContested(i) {
       // flickers between owned and amber; steady amber under reduced motion
@@ -683,11 +748,11 @@
         'OS  ' + n.os,
         n.entry ? 'STATUS OUR FOOTHOLD' : n.owned ? 'STATUS OWNED' : (adj[hover].some((i) => nodes[i].owned) ? 'STATUS EXPLOITABLE' : 'STATUS NO ROUTE'),
       ];
-      g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+      g.font = MONOF(fs);
       trySpace(0);
       let wMax = 0;
       for (const l of lines) wMax = Math.max(wMax, g.measureText(l).width);
-      const pad = 5, lh = 11;
+      const pad = 5, lh = fs + 2;
       const bw = wMax + pad * 2, bh = lines.length * lh + pad * 2 - 2;
       let bx = n.x + n.r + 6, by = n.y - bh / 2;
       if (bx + bw > ctx.width - 2) bx = n.x - n.r - 6 - bw;
@@ -711,7 +776,7 @@
         const first = i === 0;
         g.fillStyle = first ? ctx.rgba(n.entry ? 'phosphor' : n.owned ? 'neon' : 'ice', 1)
           : i === lines.length - 1 ? ctx.rgba(stCol, 0.95) : ctx.rgba('text', 0.9);
-        g.fillText(lines[i], bx + pad, by + pad + i * lh + 4);
+        g.fillText(lines[i], bx + pad, by + pad + i * lh + lh / 2 - 1);
       }
       // pointer line
       g.strokeStyle = ctx.rgba('holo', 0.5);
@@ -723,20 +788,20 @@
       g.textBaseline = 'alphabetic';
       trySpace(0);
       // top-left status
-      g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+      g.font = MONOF(fs);
       g.textAlign = 'left';
       g.fillStyle = ctx.rgba('holo', 0.6);
-      if (hudFull(w, h)) g.fillText(`NODES ${nodes.length}  LINKS ${edges.length}  PKT/S ${pktRate}`, 6, 12);
+      if (hudFull(w, h)) g.fillText(`NODES ${nodes.length}  LINKS ${edges.length}  PKT/S ${pktRate}`, 6, fs + 3);
       // last-owned readout, left of the compromise %, typed in over its first 400 ms
       if (lastOwned && w >= 200) {
-        g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+        g.font = UIF(fs);
         const room = w - 12 - g.measureText(`COMPROMISE ${pct}%`).width - 10;
-        g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+        g.font = MONOF(fs);
         const full = [`▸ OWNED ${lastOwned.host} ${lastOwned.ip}`, `▸ OWNED ${lastOwned.host}`, `▸ ${lastOwned.host}`, '']
           .find((s) => g.measureText(s).width <= room);
         const age = t - lastOwned.t;
         const txt = ctx.reducedMotion ? full : full.slice(0, Math.ceil(full.length * U.clamp(age / 400, 0, 1)));
-        g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+        g.font = MONOF(fs);
         g.textAlign = 'left';
         g.fillStyle = age < 1500 ? ctx.rgba('neon', 0.95) : ctx.rgba('text', 0.6);
         g.fillText(txt, 6, h - 11);
@@ -750,7 +815,7 @@
       // ticks
       g.strokeStyle = ctx.rgba('holo', 0.2);
       for (let x = barX; x <= barX + barW; x += barW / 10) { g.beginPath(); g.moveTo(x, barY - 1); g.lineTo(x, barY); g.stroke(); }
-      g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+      g.font = UIF(fs);
       g.textAlign = 'right';
       g.fillStyle = ctx.rgba('neon', 0.9);
       g.fillText(`COMPROMISE ${pct}%`, barX + barW, barY - 3);
@@ -766,12 +831,29 @@
 
     /* ----------------------------------------------------------------- tick */
 
+    // Small size changes keep the mesh (and the intrusion's progress): positions and radii scale with
+    // the body so nothing sits stale outside it, and the springs settle the rest.
+    function rescale(w, h) {
+      const sx = w / pw, sy = h / ph;
+      const r2 = nodeR();
+      const rk = r2 / nr;
+      for (const n of nodes) {
+        n.x *= sx; n.y *= sy; n.vx = 0; n.vy = 0; n.r *= rk;
+      }
+      for (const b of bursts) { b.x *= sx; b.y *= sy; }
+      for (const l of clLabel) { l.x *= sx; l.y *= sy; }
+      if (noRoute) { noRoute.x *= sx; noRoute.y *= sy; }
+      pw = w; ph = h; nr = r2;
+    }
+
     return {
-      resize() {
+      resize(w, h) {
         rectDirty = true;
-        if (!nodes.length) build();
-        // a big size change (rotate, layout switch) wants a differently sized mesh: re-map it
-        else if (Math.abs(nodeCount() - nodes.length) > 8 && remap <= 0) remap = 1;
+        const prev = arr;
+        arrange(w, h);
+        // first mount, a different arrangement or a very different mesh size: lay out a fresh mesh
+        if (!nodes.length || arr !== prev || Math.abs(nodeCount() - nodes.length) > 8) build();
+        else rescale(w, h);
       },
       tick(_now, dt) {
         // one clock for every schedule: the panel's own accumulated time (pauses when hidden)

@@ -176,60 +176,141 @@
 
     let L = null;
 
-    function layout(w, h) {
-      const mini = h < 100 || w < 230;
-      const big = w >= 400;
-      const pad = mini ? 5 : big ? 8 : 6;
-      const o = { w, h, mini, big, pad };
-      if (mini) {
-        o.ncore = 12;
-        o.ax = pad;
-        o.aw = Math.round((w - pad * 2) * 0.53);
-        o.bx = o.ax + o.aw + 10;
-        o.bw = w - pad - o.bx;
-        o.labelY = pad + 5;
-        o.nums = 0;
-        o.axisW = 0;
-        o.barTop = pad + 14;
-        o.barBot = h - pad;
-        o.coreLabels = false;
-        o.thermY = pad + 5;
-        o.sparks = [{ key: 'in', label: 'NET', col: 'holo', x: o.bx, y: pad + 26, w: o.bw, h: h - pad - (pad + 26), ty: pad + 19 }];
-        o.rows = [];
-        o.gauge = null;
+    // text width at a given label font (Chakra Petch 600, letter-spaced); layout-time only
+    function lblW(text, px, spacing) {
+      b.font = `600 ${px}px ${UI}`;
+      ls(b, spacing);
+      const v = b.measureText(text).width;
+      ls(b, 0);
+      return v;
+    }
+
+    // CPU block: label row, optional per-core number rows, bars, optional core index labels
+    function cpuBlock(o, x, y, cw, bot, { axis = true, nums = true, labels = true } = {}) {
+      const k = o.k;
+      o.ax = x;
+      o.aw = cw;
+      o.axisW = axis ? 7 : 0;
+      // fewer, fatter cores when the column is narrow
+      o.ncore = NCORE;
+      for (const n of [16, 12, 8]) {
+        o.ncore = n;
+        if ((cw - o.axisW) / n >= (o.mini ? 5.5 : 6)) break;
+      }
+      const cell = (cw - o.axisW) / o.ncore;
+      o.nums = nums ? (cell >= 17 * k ? 1 : 2) : 0;
+      o.labelY = y + Math.round(5 * k);
+      o.numY = [y + Math.round(17 * k), y + Math.round(27 * k)];
+      o.barTop = o.nums ? y + Math.round(12 * k) + o.nums * Math.round(10 * k) + Math.round(5 * k) : y + Math.round(14 * k);
+      o.coreLabels = labels;
+      o.barBot = bot - (labels ? Math.round(11 * k) : 2);
+    }
+
+    // MEM / THERM / PWR rows with the ICE arc on their right, inside (x, y, cw, bh)
+    function statsBlock(o, x, y, cw, bh, gaugeMax) {
+      const k = o.k;
+      // rows need room for label + value; the arc gives way first, and goes when too small
+      const cv = charW(o.fv);
+      const rowNeed = Math.max(
+        lblW('THERM', o.fs, 1.4) + 6 + cv * 4,
+        lblW('PWR', o.fs, 1.4) + 8 + cv * 4 + charW(o.fs) * 2
+      );
+      const gd = Math.max(0, Math.floor(Math.min(bh, cw * 0.42, gaugeMax, cw - 8 - rowNeed)));
+      o.gauge = gd >= 34 ? { cx: x + cw - gd / 2, cy: y + bh / 2 + 1, r: gd / 2 - 4 } : null;
+      const rx1 = o.gauge ? x + cw - gd - 8 : x + cw;
+      const nr = bh >= 48 * k ? 3 : 2;
+      const pitch = bh / nr;
+      const rowH = Math.round(15 * k);
+      const off = Math.max(0, Math.round((pitch - rowH) / 2) - 1);
+      const keys = ['mem', 'therm', 'pwr'];
+      o.rows = [];
+      for (let i = 0; i < nr; i++) {
+        const ry = y + i * pitch + off;
+        o.rows.push({ key: keys[i], x, w: rx1 - x, ty: ry + Math.round(5 * k), by: Math.round(ry + 10.5 * k), bh: Math.max(4, Math.round(4 * k)) });
+      }
+    }
+
+    // NET IN / NET OUT sparklines, stacked or side by side, inside (x, y, cw, ch)
+    function sparkBlock(o, x, y, cw, ch, sideBySide) {
+      const k = o.k;
+      const lh = Math.round(11 * k);
+      const mk = (key, sx, sy, sw, sh) => ({
+        key,
+        label: key === 'in' ? 'NET IN' : 'NET OUT',
+        col: key === 'in' ? 'holo' : 'neon',
+        x: Math.round(sx),
+        y: Math.round(sy + lh),
+        w: Math.round(sw),
+        h: Math.max(6, Math.round(sh - lh)),
+        ty: Math.round(sy + 4 * k),
+      });
+      if (sideBySide) {
+        const gap = Math.round(14 * k);
+        const sw = (cw - gap) / 2;
+        o.sparks = [mk('in', x, y, sw, ch), mk('out', x + sw + gap, y, sw, ch)];
       } else {
-        o.ncore = NCORE;
-        o.ax = pad;
-        o.aw = Math.round((w - pad * 2) * (big ? 0.5 : 0.47));
+        const gap = Math.round(5 * k);
+        const sh = (ch - gap) / 2;
+        o.sparks = [mk('in', x, y, cw, sh), mk('out', x, y + sh + gap, cw, sh)];
+      }
+    }
+
+    function layout(w, h) {
+      const tall = h >= 250 && h >= w * 1.6 && w < 420;
+      const wide = !tall && w >= 480 && w >= h * 3.6;
+      const mini = !tall && !wide && (h < 100 || w < 230);
+      const big = w >= 400;
+      // full-screen sized panels scale type and geometry with the panel, within caps
+      const k = mini || tall ? 1 : wide ? U.clamp(Math.min(w / 1400, h / 200), 1, 1.6) : U.clamp(Math.min(w / 700, h / 320), 1, 1.7);
+      const pad = mini ? 5 : big ? Math.round(8 * k) : 6;
+      const o = { w, h, mini, big, tall, wide, pad, k, seams: [], rows: [], gauge: null, therm: null };
+      o.fs = 9 * k; // label px
+      o.fv = 10 * k; // value px
+      const iw = w - pad * 2;
+      if (mini) {
+        // CPU on the left, THERM + one NET sparkline on the right; the right column gets
+        // at least the width its readouts need, the cores make do with what is left
+        const need = Math.max(lblW('THERM', 9, 1.4) + 4 + charW(11) * 4, lblW('NET', 9, 1.4) + 8 + charW(9) * 9 + 2) + 2;
+        const bw = Math.min(iw - 50, Math.max(Math.round(iw * 0.47), Math.ceil(need)));
+        cpuBlock(o, pad, pad, iw - bw - 10, h - pad + 2, { axis: false, nums: false, labels: false });
+        o.bx = w - pad - bw;
+        o.bw = bw;
+        o.therm = { x: o.bx, xr: o.bx + bw, y: pad + 5 };
+        o.sparks = [{ key: 'in', label: 'NET', col: 'holo', x: o.bx, y: pad + 26, w: bw, h: h - pad - (pad + 26), ty: pad + 19 }];
+        o.seams.push([o.bx - 6.5, pad, o.bx - 6.5, h - pad]);
+      } else if (tall) {
+        // CPU across the top, then the stats block, then two stacked sparklines
+        const cpuH = Math.round(h * 0.42);
+        cpuBlock(o, pad, pad, iw, cpuH);
+        const y0 = cpuH + 12;
+        o.seams.push([pad, cpuH + 5.5, w - pad, cpuH + 5.5]);
+        const topH = U.clamp(Math.round(h * 0.13), 48, 110);
+        statsBlock(o, pad, y0, iw, topH, 110);
+        const sy0 = y0 + topH + 8;
+        o.seams.push([pad, sy0 - 3.5, w - pad, sy0 - 3.5]);
+        sparkBlock(o, pad, sy0, iw, h - pad - sy0, false);
+      } else if (wide) {
+        // three columns: CPU | stats + ICE arc | NET IN and NET OUT side by side
+        const cw = Math.round(iw * 0.4);
+        const short = h < 110;
+        cpuBlock(o, pad, pad, cw, h - pad + (short ? 2 : 0), { nums: !short, labels: h >= 120 });
+        const sx = pad + cw + 13;
+        const sw = Math.round(iw * 0.24);
+        statsBlock(o, sx, pad, sw, h - pad * 2, Math.round(120 * k));
+        const px0 = sx + sw + 13;
+        sparkBlock(o, px0, pad, w - pad - px0, h - pad * 2, true);
+        o.seams.push([sx - 6.5, pad, sx - 6.5, h - pad], [px0 - 6.5, pad, px0 - 6.5, h - pad]);
+      } else {
+        const aw = Math.round(iw * (big ? 0.5 : 0.47));
+        cpuBlock(o, pad, pad, aw, h - pad, { labels: h >= 120 });
         o.bx = o.ax + o.aw + 13;
         o.bw = w - pad - o.bx;
-        o.axisW = 7;
-        const cell = (o.aw - o.axisW) / NCORE;
-        o.nums = cell >= 17 ? 1 : 2;
-        o.labelY = pad + 5;
-        o.numY = [pad + 17, pad + 27];
-        o.barTop = pad + 12 + o.nums * 10 + 5;
-        o.coreLabels = h >= 120;
-        o.barBot = h - pad - (o.coreLabels ? 11 : 2);
         // right column: bars + ICE arc on top, two sparklines below
-        const topH = h >= 170 ? Math.min(110, Math.max(50, Math.round(h * 0.26))) : 40;
-        const gd = topH;
-        o.gauge = { cx: w - pad - gd / 2, cy: pad + gd / 2 + 1, r: gd / 2 - 4 };
-        const rx1 = w - pad - gd - 8;
-        const nr = topH >= 50 ? 3 : 2;
-        o.rows = [];
-        const keys = ['mem', 'therm', 'pwr'];
-        for (let i = 0; i < nr; i++) {
-          const y = pad + (i * topH) / nr;
-          o.rows.push({ key: keys[i], x: o.bx, w: rx1 - o.bx, ty: y + 5, by: Math.round(y + 10.5), bh: 4 });
-        }
+        const topH = h >= 170 ? Math.min(Math.round(110 * k), Math.max(50, Math.round(h * 0.26))) : 40;
+        statsBlock(o, o.bx, pad, o.bw, topH, topH);
         const sy0 = pad + topH + 7;
-        const gap = 5;
-        const sh = (h - pad - sy0 - gap) / 2;
-        o.sparks = [
-          { key: 'in', label: 'NET IN', col: 'holo', x: o.bx, y: Math.round(sy0 + 11), w: o.bw, h: Math.round(sh - 11), ty: sy0 + 4 },
-          { key: 'out', label: 'NET OUT', col: 'neon', x: o.bx, y: Math.round(sy0 + sh + gap + 11), w: o.bw, h: Math.round(sh - 11), ty: sy0 + sh + gap + 4 },
-        ];
+        sparkBlock(o, o.bx, sy0, o.bw, h - pad - sy0, false);
+        o.seams.push([o.bx - 6.5, pad, o.bx - 6.5, h - pad]);
       }
       o.cell = (o.aw - o.axisW) / o.ncore;
       o.barW = Math.max(3, Math.floor(o.cell - (o.cell > 9 ? 3 : 2)));
@@ -241,7 +322,17 @@
       o.barGrad.addColorStop(0.8, C.holo);
       o.barGrad.addColorStop(0.86, C.amber);
       o.barGrad.addColorStop(1, C.amber);
+      if (o.gauge) o.gauge.lw = Math.max(3, Math.round(o.gauge.r / 16));
+      for (const r of o.rows) {
+        r.memTag = r.key === 'mem' && r.w >= lblW('MEM', o.fs, 1.4) + 10 + charW(o.fv) * 4 + charW(o.fs) * 13;
+      }
       for (const s of o.sparks) {
+        // narrow beds: short label so it never runs into the live value
+        const valW = charW(mini ? 9 : o.fv) * 5 + charW(o.fs) * 4 + 2;
+        if (lblW(s.label, o.fs, 1.4) + 8 + valW > s.w) s.label = s.key === 'in' ? 'IN' : 'OUT';
+        // "PK x.x" beside the label, only when it clears the live value on the right
+        const pkX = s.x + Math.round(Math.max(lblW('NET IN', o.fs, 1.4), lblW('NET OUT', o.fs, 1.4))) + 10;
+        s.pkX = !mini && pkX + charW(o.fs) * 8 + 10 + charW(o.fv) * 5 + charW(o.fs) * 4 <= s.x + s.w ? pkX : 0;
         s.fill = g.createLinearGradient(0, s.y, 0, s.y + s.h);
         s.fill.addColorStop(0, rgba(s.col, 0.34));
         s.fill.addColorStop(1, rgba(s.col, 0.02));
@@ -261,7 +352,7 @@
     /* ----------------------------------------------------- static layer */
 
     function label(c, text, x, y, col, spacing) {
-      c.font = `600 9px ${UI}`;
+      c.font = `600 ${L ? L.fs : 9}px ${UI}`;
       ls(c, spacing == null ? 1.4 : spacing);
       c.fillStyle = col || C.dim;
       c.fillText(text, x, y);
@@ -272,18 +363,28 @@
 
     function drawStatic() {
       base.clear();
-      const { w, h, pad, ax, aw, bx, barTop, barBot } = L;
+      const { ax, aw, barTop, barBot } = L;
+      const fs = L.fs;
       b.save();
       b.textBaseline = 'middle';
       b.lineWidth = 1;
 
       // cores: label, axis ticks, segmented tracks, baseline, index labels
       const lw = label(b, 'CPU', ax, L.labelY, C.holo, 1.8);
-      if (!L.mini) {
-        b.font = `500 9px ${MONO}`;
+      b.font = `500 ${fs}px ${MONO}`;
+      // the core-count tag only where the AVG readout leaves room for it
+      L.tagR = ax + lw + 6 + b.measureText('16C/128T').width;
+      if (!L.mini && L.tagR + 8 + charW(fs) * 4 + lblW('AVG', fs, 1.2) + 4 <= ax + aw) {
         b.fillStyle = C.dim;
         b.fillText('16C/128T', ax + lw + 6, L.labelY);
+      } else {
+        L.tagR = ax + lw;
       }
+      // spike readout: the full word only where it clears the label (and tag)
+      b.font = `700 ${fs}px ${UI}`;
+      ls(b, 1.4);
+      L.sat = ax + aw - b.measureText('SATURATED').width >= L.tagR + 6 ? 'SATURATED' : 'SAT';
+      ls(b, 0);
       if (L.axisW) {
         b.strokeStyle = rgba('holo', 0.35);
         b.beginPath();
@@ -316,22 +417,28 @@
       b.lineTo(ax + aw, barBot + 1.5);
       b.stroke();
       if (L.coreLabels) {
-        b.font = `500 9px ${MONO}`;
+        b.font = `500 ${fs}px ${MONO}`;
         b.textAlign = 'center';
         for (let i = 0; i < L.ncore; i += 4) {
           b.fillStyle = rgba('dim', 0.9);
-          b.fillText(U.pad(i), L.coreX[i] + L.barW / 2, barBot + 7);
+          b.fillText(U.pad(i), L.coreX[i] + L.barW / 2, barBot + Math.round(7 * L.k));
         }
         b.textAlign = 'left';
       }
 
-      // column seam
-      const sx = Math.round(bx - 7) + 0.5;
+      // column / block seams
       b.strokeStyle = rgba('holo', 0.14);
       b.setLineDash([2, 3]);
       b.beginPath();
-      b.moveTo(sx, pad);
-      b.lineTo(sx, h - pad);
+      for (const [x0, y0, x1, y1] of L.seams) {
+        if (x0 === x1) {
+          b.moveTo(Math.round(x0) + 0.5, y0);
+          b.lineTo(Math.round(x1) + 0.5, y1);
+        } else {
+          b.moveTo(x0, Math.round(y0) + 0.5);
+          b.lineTo(x1, Math.round(y1) + 0.5);
+        }
+      }
       b.stroke();
       b.setLineDash([]);
 
@@ -348,7 +455,7 @@
         const a0 = Math.PI * 0.75;
         const a1 = Math.PI * 2.25;
         b.strokeStyle = rgba('holo', 0.13);
-        b.lineWidth = 3;
+        b.lineWidth = L.gauge.lw;
         b.beginPath();
         b.arc(cx, cy, r, a0, a1);
         b.stroke();
@@ -398,7 +505,7 @@
         b.stroke();
         label(b, s.label, s.x, s.ty);
       }
-      if (L.mini) label(b, 'THERM', L.bx, L.thermY);
+      if (L.therm) label(b, 'THERM', L.therm.x, L.therm.y);
       b.restore();
     }
 
@@ -418,10 +525,10 @@
     // right-aligned "value unit" pair, value bright and unit dim
     function valUnit(xr, y, val, unit, px, col) {
       const cw = charW(px);
-      const uw = unit ? charW(9) * unit.length : 0;
+      const uw = unit ? charW(L.fs) * unit.length : 0;
       g.textAlign = 'left';
       if (unit) {
-        g.font = `500 9px ${MONO}`;
+        g.font = `500 ${L.fs}px ${MONO}`;
         g.fillStyle = C.dim;
         g.fillText(unit, xr - uw, y);
       }
@@ -440,22 +547,23 @@
 
       g.textBaseline = 'middle';
       // header readout: average, or a saturation warning while spiking
+      const fs = L.fs;
       if (spike) {
-        g.font = `700 9px ${UI}`;
+        g.font = `700 ${fs}px ${UI}`;
         ls(g, 1.4);
         g.textAlign = 'right';
         g.fillStyle = blink ? C.threat : C.ice;
-        g.fillText('SATURATED', ax + aw, L.labelY);
+        g.fillText(L.sat, ax + aw, L.labelY);
         ls(g, 0);
         g.textAlign = 'left';
       } else if (!L.mini) {
         const a = Math.round(shown.avg);
-        valUnit(ax + aw, L.labelY, `${a}%`, '', 9, heat(a, 80, 95));
-        g.font = `600 9px ${UI}`;
+        valUnit(ax + aw, L.labelY, `${a}%`, '', fs, heat(a, 80, 95));
+        g.font = `600 ${fs}px ${UI}`;
         ls(g, 1.2);
         g.textAlign = 'right';
         g.fillStyle = C.dim;
-        g.fillText('AVG', ax + aw - charW(9) * `${a}%`.length - 4, L.labelY);
+        g.fillText('AVG', ax + aw - charW(fs) * `${a}%`.length - 4, L.labelY);
         ls(g, 0);
         g.textAlign = 'left';
       }
@@ -512,10 +620,10 @@
 
       // per-core numbers, staggered over two rows so each gets two cells of width
       if (L.nums) {
-        g.font = `500 9px ${MONO}`;
+        g.font = `500 ${fs}px ${MONO}`;
         g.textAlign = 'center';
         // three digits only fit when each number owns ~19 px; otherwise a pegged core reads PK
-        const room = L.nums === 1 ? L.cell : L.cell * 2;
+        const room = (L.nums === 1 ? L.cell : L.cell * 2) / L.k;
         for (let i = 0; i < ncore; i++) {
           const v = shown.nums[i];
           const y = L.nums === 1 ? L.numY[0] : L.numY[i % 2];
@@ -537,7 +645,7 @@
           frac = mem / 100;
           val = `${Math.round(shown.mem)}%`;
           // the dim "·" keeps "45%" and "29.0/64T" from reading as one number
-          unit = L.big ? ` · ${((shown.mem / 100) * 64).toFixed(1)}/64T` : '';
+          unit = r.memTag ? ` · ${((shown.mem / 100) * 64).toFixed(1)}/64T` : '';
           col = heat(shown.mem, 85, 95);
           fill = rgba('holo', 0.85);
         } else if (r.key === 'therm') {
@@ -564,7 +672,7 @@
         g.fillStyle = C.ice;
         g.fillRect(r.x + fw, r.by - 1, 1, r.bh + 2);
         g.textBaseline = 'middle';
-        valUnit(r.x + r.w, r.ty, val, unit, 10, col);
+        valUnit(r.x + r.w, r.ty, val, unit, L.fv, col);
       }
     }
 
@@ -576,12 +684,13 @@
       const v = U.clamp(ice / 100, 0, 1);
       const a = a0 + (a1 - a0) * v;
       const col = ice >= 90 ? C.threat : ice >= 70 ? C.amber : C.holo;
-      g.lineWidth = 3;
+      const lw = L.gauge.lw;
+      g.lineWidth = lw;
       g.strokeStyle = col;
       g.beginPath();
       g.arc(cx, cy, r, a0, a);
       g.stroke();
-      g.lineWidth = 7;
+      g.lineWidth = lw + 4;
       g.strokeStyle = rgba(col, 0.12);
       g.beginPath();
       g.arc(cx, cy, r, a0, a);
@@ -595,7 +704,7 @@
       g.stroke();
       g.textAlign = 'center';
       g.textBaseline = 'middle';
-      g.font = `500 ${r >= 20 ? 12 : 11}px ${MONO}`;
+      g.font = `500 ${r >= 20 ? Math.round(U.clamp(r * 0.32, 12, 30)) : 11}px ${MONO}`;
       g.fillStyle = ice >= 90 ? C.threat : C.ice;
       g.fillText(String(Math.round(shown.ice)), cx, cy - 1);
       g.textAlign = 'left';
@@ -651,24 +760,24 @@
         drawSpark(s, isIn ? bufIn : bufOut, isIn ? netIn : netOut, isIn ? vmaxIn : vmaxOut, now);
         const v = isIn ? shown.netIn : shown.netOut;
         g.textBaseline = 'middle';
-        valUnit(s.x + s.w, s.ty, v.toFixed(2), 'Gb/s', L.mini ? 9 : 10, isIn ? C.ice : rgba('neon', 1));
-        if (!L.mini && s.w > 170) {
-          g.font = `500 9px ${MONO}`;
+        valUnit(s.x + s.w, s.ty, v.toFixed(2), 'Gb/s', L.mini ? 9 : L.fv, isIn ? C.ice : rgba('neon', 1));
+        if (s.pkX) {
+          g.font = `500 ${L.fs}px ${MONO}`;
           g.fillStyle = rgba('dim', 0.9);
-          g.fillText(`PK ${((isIn ? vmaxIn : vmaxOut) / 1.3).toFixed(1)}`, s.x + 52, s.ty);
+          g.fillText(`PK ${((isIn ? vmaxIn : vmaxOut) / 1.3).toFixed(1)}`, s.pkX, s.ty);
         }
       }
     }
 
     function drawMini() {
       const t = Math.round(shown.therm);
-      valUnit(L.bx + L.bw, L.thermY, `${t}°C`, '', 11, heat(t, 82, 92));
+      valUnit(L.therm.xr, L.therm.y, `${t}°C`, '', 11, heat(t, 82, 92));
     }
 
     function draw(now) {
       live.clear();
       drawCores(now);
-      if (L.mini) drawMini();
+      if (L.therm) drawMini();
       drawRows();
       drawGauge(now);
       drawSparks(now);

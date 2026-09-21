@@ -22,17 +22,18 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2px * var(--tr-k, 1));
   border-top: 1px solid var(--edge);
   padding-top: 3px;
+  overflow-anchor: none; /* the JS folds whole rows; no browser anchoring on top of that */
 }
 [data-panel="trace"] .tr-row {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: auto auto 1fr auto;
   align-items: baseline;
-  column-gap: 4px;
-  padding: 1px 3px;
+  column-gap: calc(4px * var(--tr-k, 1));
+  padding: calc(1px * var(--tr-k, 1)) 3px;
   line-height: 1.15;
   border-left: 2px solid transparent;
 }
@@ -40,16 +41,16 @@
   display: contents;
 }
 [data-panel="trace"] .tr-idx {
-  font: 500 9px/1 var(--f-mono);
+  font: 500 calc(9px * var(--tr-k, 1))/1 var(--f-mono);
   color: var(--text-faint);
-  min-width: 13px;
+  min-width: calc(13px * var(--tr-k, 1));
 }
 [data-panel="trace"] .tr-mark {
-  font: 500 9px/1 var(--f-mono);
+  font: 500 calc(9px * var(--tr-k, 1))/1 var(--f-mono);
   color: var(--text-dim);
 }
 [data-panel="trace"] .tr-ci {
-  font: 600 10px/1 var(--f-ui);
+  font: 600 calc(10px * var(--tr-k, 1))/1 var(--f-ui);
   letter-spacing: 0.06em;
   color: var(--text);
   white-space: nowrap;
@@ -57,18 +58,18 @@
   text-overflow: ellipsis;
 }
 [data-panel="trace"] .tr-cc {
-  font: 500 9px/1 var(--f-mono);
+  font: 500 calc(9px * var(--tr-k, 1))/1 var(--f-mono);
   color: var(--text-dim);
   justify-self: end;
 }
 [data-panel="trace"] .tr-l2 {
   grid-column: 1 / -1;
-  font: 400 9px/1.2 var(--f-mono);
+  font: 400 calc(9px * var(--tr-k, 1))/1.2 var(--f-mono);
   color: var(--text-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-left: 12px;
+  padding-left: calc(12px * var(--tr-k, 1));
 }
 
 /* row states */
@@ -90,13 +91,18 @@
 [data-panel="trace"] .tr-row.is-target.is-done .tr-mark { color: var(--threat); }
 [data-panel="trace"] .tr-row.is-lost .tr-ci { color: var(--threat); text-decoration: line-through; }
 [data-panel="trace"] .tr-row.is-lost .tr-mark { color: var(--threat); }
+/* a row the list's bottom edge would slice in half is hidden instead (set from JS) */
+[data-panel="trace"] .tr-row.is-clip { visibility: hidden; }
+[data-panel="trace"] .tr-row.is-gone { display: none; }
+/* short lists: only the hop being probed keeps its address line */
+[data-panel="trace"].is-compact .tr-row:not(.is-cur) .tr-l2 { display: none; }
 
-/* per-hop RTT strip: soaks up the spare height, collapses first when space is short */
+/* per-hop RTT strip: soaks up the spare height, collapses first when space is short; tall
+   strips also carry the cumulative-RTT history under the bars */
 [data-panel="trace"] .tr-rtt {
   position: relative;
   flex: 1 1 0;
   min-height: 0;
-  max-height: 96px;
   border-top: 1px solid var(--edge);
   margin-top: 1px;
 }
@@ -107,7 +113,7 @@
   margin-top: auto;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2px * var(--tr-k, 1));
   padding: 3px 3px 1px;
   border-top: 1px solid var(--edge);
 }
@@ -115,14 +121,15 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font: 600 9px/1 var(--f-ui);
+  font: 600 calc(9px * var(--tr-k, 1))/1 var(--f-ui);
   letter-spacing: 0.14em;
   color: var(--text-dim);
 }
-[data-panel="trace"] .tr-lock-pct { font: 500 10px/1 var(--f-mono); color: var(--holo); }
+[data-panel="trace"] .tr-lock-top > span:first-child { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+[data-panel="trace"] .tr-lock-pct { flex: 0 0 auto; margin-left: 2px; font: 500 calc(10px * var(--tr-k, 1))/1 var(--f-mono); color: var(--holo); }
 [data-panel="trace"] .tr-lock-bar {
   position: relative;
-  height: 5px;
+  height: calc(5px * var(--tr-k, 1));
   background: rgba(95, 243, 255, 0.08);
   border: 1px solid var(--edge);
   overflow: hidden;
@@ -146,6 +153,17 @@
 [data-panel="trace"] .tr-side { display: contents; }
 [data-panel="trace"].is-wide .tr-side { display: flex; }
 [data-panel="trace"].is-wide .tr-list { border-top: none; padding-top: 0; }
+
+/* ---- COLS layout (very wide strips): globe | hop list | RTT, lock bar under list + RTT ---- */
+[data-panel="trace"].is-cols .tr-side {
+  display: grid;
+  grid-template-columns: minmax(0, calc(300px * var(--tr-k, 1))) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 4px 0;
+}
+[data-panel="trace"].is-cols .tr-list { grid-column: 1; grid-row: 1; padding-right: 8px; }
+[data-panel="trace"].is-cols .tr-rtt { grid-column: 2; grid-row: 1; border-top: none; margin-top: 0; }
+[data-panel="trace"].is-cols .tr-lock { grid-column: 1 / -1; grid-row: 2; }
 
 /* ---- MINI layout (~97px): tiny globe, single-line rows ---- */
 [data-panel="trace"].is-mini .tr-globe { height: 34%; }

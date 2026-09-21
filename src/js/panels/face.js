@@ -407,29 +407,48 @@
     let fy0 = 0;
     let small = false;
     let stat = null; // static layer
+    let k = 1; // UI scale of the readouts + carousel on big panels
+    let kf = 1; // text/marker scale inside the face viewport
+    let strip = false; // wide + short: face | readouts | carousel side by side
 
     function layout(w, h) {
       W = w;
       H = h;
       wide = w > h * 1.1;
+      k = U.clamp(Math.min(w / 420, h / 330), 1, 1.8);
+      strip = false;
       if (wide) {
-        const fw = Math.round(Math.min(w * 0.47, h * 0.66));
-        const colW = Math.min(w - fw - 9, 340);
-        const ox = Math.max(0, Math.round((w - (fw + 9 + colW)) / 2)); // centre oversize layouts
-        F = { x: ox, y: 0, w: fw, h };
-        const cx = ox + fw + 6;
-        RD = { x: cx, y: 3, w: colW, h: 64 };
-        CR = { x: cx, y: 72, w: colW, h: h - 74 };
+        let fw = Math.round(Math.min(w * 0.47, h * 0.66));
+        const rest = w - fw - 9;
+        if (rest >= 470 && h < 300) {
+          // strip: the readouts get their own column (with trend lines), the carousel the rest
+          strip = true;
+          const rdW = Math.round(U.clamp(rest * 0.3, 170, 280 * k));
+          F = { x: 0, y: 0, w: fw, h };
+          RD = { x: fw + 6, y: 3, w: rdW, h: h - 6 };
+          const cx = RD.x + rdW + 12;
+          CR = { x: cx, y: 3, w: w - cx - 2, h: h - 5 };
+        } else {
+          // the side column is capped, the face viewport takes whatever width is left
+          const colW = Math.round(Math.min(rest, 340 * k));
+          fw = w - 9 - colW;
+          F = { x: 0, y: 0, w: fw, h };
+          const cx = fw + 6;
+          const rh = Math.round(64 * k);
+          RD = { x: cx, y: 3, w: colW, h: rh };
+          CR = { x: cx, y: rh + 8, w: colW, h: h - rh - 10 };
+        }
       } else {
         const showRead = h >= 230 && w >= 120;
         const fh = Math.round(Math.min(h * (showRead ? 0.58 : 0.6), w * 1.3));
         F = { x: 0, y: 0, w, h: fh };
-        const rh = showRead ? (w >= 180 ? 32 : 29) : 0;
+        const rh = showRead ? Math.round((w >= 180 ? 32 : 29) * k) : 0;
         RD = showRead ? { x: 3, y: fh + 3, w: w - 6, h: rh } : null;
         const cy = fh + 3 + (rh ? rh + 3 : 0);
         CR = { x: 3, y: cy, w: w - 6, h: h - cy - 2 };
       }
       small = F.w < 120;
+      kf = U.clamp(Math.min(F.w, F.h) / 300, 1, 1.7);
       S = Math.min(F.h * 0.36, F.w * 0.5);
       fx0 = F.x + F.w / 2;
       fy0 = F.y + F.h * 0.49 + 1;
@@ -475,7 +494,7 @@
       s.fillStyle = 'rgba(2,8,14,0.55)';
       s.fillRect(fx, fy, fw, fh);
       s.fillStyle = ctx.rgba('holo', 0.13);
-      const step = small ? 8 : 10;
+      const step = Math.round((small ? 8 : 10) * Math.min(kf, 1.5));
       for (let y = fy + step; y < fy + fh - 2; y += step) {
         for (let x = fx + step; x < fx + fw - 2; x += step) s.fillRect(Math.round(x), Math.round(y), 1, 1);
       }
@@ -492,7 +511,7 @@
       s.lineWidth = 1;
       s.strokeStyle = ctx.rgba('holo', 0.16);
       s.strokeRect(fx, fy, fw, fh);
-      bracket(s, fx, fy, fw, fh, small ? 6 : 9, ctx.rgba('holo', 0.75));
+      bracket(s, fx, fy, fw, fh, (small ? 6 : 9) * kf, ctx.rgba('holo', 0.75));
       // vertical rulers
       s.strokeStyle = ctx.rgba('holo', 0.35);
       s.beginPath();
@@ -524,6 +543,10 @@
         s.beginPath();
         s.moveTo(F.x + F.w + 2.5, 4);
         s.lineTo(F.x + F.w + 2.5, H - 4);
+        if (strip) {
+          s.moveTo(Math.round(CR.x - 6) + 0.5, 4);
+          s.lineTo(Math.round(CR.x - 6) + 0.5, H - 4);
+        }
         s.stroke();
       }
     }
@@ -551,7 +574,11 @@
     let flipAt = 0;
     let flipT = 0;
     let flipIv = 70;
-    const rejects = []; // ring buffer, capped
+    const rejects = []; // capped queue: big panels show a multi-column reject log
+    const REJ_MAX = 120;
+    let rejVer = 0; // bumps on every new reject (the log layer redraws from it)
+    // the registry sweep is already under way when the panel comes up: big layouts show a full log
+    for (let i = 0; i < 40; i++) rejects.push(mkCand());
     let scanned = R.int(1200000, 1900000);
     let conf = 94.1;
     let xref = '';
@@ -562,6 +589,12 @@
     let speed = 1;
     const marks = []; // landmark reveal schedule
     const readout = { live: 97.8, depth: 41.6, ir: 36.6, t: 0 };
+    // normalised readout history for the trend lines in strip layouts (ring buffers)
+    const RH = 64;
+    const rhist = [new Float32Array(RH), new Float32Array(RH), new Float32Array(RH)];
+    let rhHead = 0;
+    const normRead = (i) => U.clamp(i === 0 ? (readout.live - 90) / 10 : i === 1 ? (readout.depth - 36) / 10 : (readout.ir - 35.5) / 2, 0, 1);
+    for (let i = 0; i < 3; i++) rhist[i].fill(normRead(i));
 
     const SCAN_S = 11.5;
     const CONV_S = 3.4;
@@ -596,7 +629,8 @@
     function flip(now) {
       if (!cand.wraith) {
         rejects.push(cand);
-        if (rejects.length > 14) rejects.shift();
+        if (rejects.length > REJ_MAX) rejects.shift();
+        rejVer++;
       }
       cand = mkCand();
       flipT = now;
@@ -651,7 +685,10 @@
     ctx.on('mission:phase', ({ phase }) => {
       speed = phase === 'critical' || phase === 'final' ? 1.5 : 1;
     });
-    ctx.on('fonts:ready', () => renderStatic());
+    ctx.on('fonts:ready', () => {
+      renderStatic();
+      rejSig = ''; // text layer: redraw with the webfont
+    });
 
     function update(now) {
       const t = (now - stT0) / 1000;
@@ -694,6 +731,8 @@
         readout.live = U.clamp(readout.live + R.range(-0.4, 0.4), locked ? 98.5 : 94, 99.8);
         readout.depth = U.clamp(readout.depth + R.range(-0.5, 0.5), 38, 45);
         readout.ir = U.clamp(readout.ir + R.range(-0.08, 0.08), 36.1, 37.2);
+        for (let i = 0; i < 3; i++) rhist[i][rhHead] = normRead(i);
+        rhHead = (rhHead + 1) % RH;
       }
     }
 
@@ -778,7 +817,7 @@
     function drawMesh(now, scanY, reveal, locked, dx) {
       const m = mesh;
       const pr = m.proj;
-      const band = small ? 7 : 10;
+      const band = (small ? 7 : 10) * kf;
       counts.fill(0);
       const top = F.y + 4;
       const bot = F.y + F.h - 4;
@@ -810,7 +849,8 @@
       for (let k = 0; k < m.ne; k++) m.order[fill[m.bucket[k]]++] = k;
 
       const baseCol = locked ? 'holo2' : 'holo';
-      g.lineWidth = small ? 0.7 : 0.85;
+      const lw = small ? 0.7 : 0.85 * Math.min(kf, 1.3);
+      g.lineWidth = lw;
       for (let bk = 1; bk < NB + NH; bk++) {
         const n = counts[bk];
         if (!n) continue;
@@ -827,13 +867,13 @@
         g.stroke();
         if (hl && bk === NB + NH - 1) {
           g.strokeStyle = ctx.rgba('holo', 0.16);
-          g.lineWidth = 3;
+          g.lineWidth = 3 * Math.min(kf, 1.4);
           g.stroke();
-          g.lineWidth = small ? 0.7 : 0.85;
+          g.lineWidth = lw;
         }
       }
       // point cloud: front vertices only, two brightness buckets + scan-lit
-      const ds = small ? 1.1 : 1.4;
+      const ds = small ? 1.1 : 1.4 * Math.min(kf, 1.5);
       for (let pass = 0; pass < 3; pass++) {
         g.beginPath();
         for (let i = 0; i < m.nv; i++) {
@@ -846,14 +886,14 @@
           const lit = Math.abs(y - scanY) < band * 0.6;
           const p = lit ? 2 : shd > 0.55 ? 1 : 0;
           if (p !== pass) continue;
-          const sz = lit ? ds + 0.6 : ds;
+          const sz = lit ? ds + 0.6 * kf : ds;
           g.rect(pr[o] + dx - sz / 2, y - sz / 2, sz, sz);
         }
         g.fillStyle = pass === 2 ? C.ice : ctx.rgba('holo', pass === 1 ? 0.85 : 0.4);
         g.fill();
       }
       // feature contours
-      g.lineWidth = small ? 0.9 : 1.1;
+      g.lineWidth = small ? 0.9 : 1.1 * Math.min(kf, 1.4);
       for (const cu of m.curves) {
         const a = U.clamp((cu.z - 0.25) / 0.45, 0, 1) * cu.w;
         if (a < 0.05) continue;
@@ -904,15 +944,16 @@
       const x = p[0];
       const y = p[1];
       if (pp < 1 && !RM) {
-        const rr = 2 + (1 - pp) * 9;
+        const rr = (2 + (1 - pp) * 9) * kf;
         g.strokeStyle = ctx.rgba(col, 0.8 * (1 - pp));
         g.beginPath();
         g.arc(x, y, rr, 0, TAU);
         g.stroke();
       }
-      g.drawImage(glow, x - 6, y - 6, 12, 12);
+      g.drawImage(glow, x - 6 * kf, y - 6 * kf, 12 * kf, 12 * kf);
       g.strokeStyle = C[col] || col;
-      g.strokeRect(Math.round(x) - 2.5, Math.round(y) - 2.5, 5, 5);
+      const q = Math.round(2.5 * kf - 0.5) + 0.5;
+      g.strokeRect(Math.round(x) - q, Math.round(y) - q, q * 2, q * 2);
       g.fillStyle = C.ice;
       g.fillRect(Math.round(x) - 0.5, Math.round(y) - 0.5, 1, 1);
     }
@@ -925,8 +966,8 @@
       const dx = x2 - x1;
       const dy = y2 - y1;
       const l = Math.hypot(dx, dy) || 1;
-      const nx = (-dy / l) * 3;
-      const ny = (dx / l) * 3;
+      const nx = (-dy / l) * 3 * kf;
+      const ny = (dx / l) * 3 * kf;
       g.moveTo(x1 - nx, y1 - ny);
       g.lineTo(x1 + nx, y1 + ny);
       g.moveTo(x2 - nx, y2 - ny);
@@ -942,8 +983,9 @@
       const glow = locked ? glowThreat : glowHolo;
       const lineCol = locked ? ctx.rgba('threat', 0.75) : ctx.rgba('ice', 0.6);
       const txtCol = locked ? '#ff8a98' : C.ice;
+      const fz = Math.round(9 * kf);
       g.lineWidth = 1;
-      g.font = MONO(9);
+      g.font = MONO(fz);
       g.textBaseline = 'middle';
       const fl = F.x + 5;
       const fr = F.x + F.w - 5;
@@ -954,7 +996,7 @@
         drawPoint(L.pupL, p, col, glow);
         drawPoint(L.pupR, p, col, glow);
         if (p >= 1) {
-          const yy = Math.min(L.pupL[1], L.pupR[1]) - (small ? 8 : 11);
+          const yy = Math.min(L.pupL[1], L.pupR[1]) - (small ? 8 : 11) * kf;
           dimLine(L.pupL[0], yy, L.pupR[0], yy, lineCol);
           g.strokeStyle = ctx.rgba(col, 0.3);
           g.beginPath();
@@ -964,8 +1006,13 @@
           g.lineTo(L.pupR[0], yy);
           g.stroke();
           const txt = small ? jitterVal(now, 'iod', P.iod) : `IOD ${jitterVal(now, 'iod', P.iod)}`;
-          const cx = U.clamp((L.pupL[0] + L.pupR[0]) / 2, fl + monoW(txt, 9) / 2 + 2, fr - monoW(txt, 9) / 2 - 2);
-          tag(cx, yy - 7, txt, txtCol, 9, 'center');
+          const cx = U.clamp((L.pupL[0] + L.pupR[0]) / 2, fl + monoW(txt, fz) / 2 + 2, fr - monoW(txt, fz) / 2 - 2);
+          // big viewports put the nasion marker right where the value sits: lift the value over it
+          let ty = yy - 7 * kf;
+          const nasOn = markP(now, 'nas') > 0;
+          if (nasOn && Math.abs(L.nas[1] - ty) < fz / 2 + 5 * kf) ty = L.nas[1] - 5 * kf - fz / 2 - 3;
+          // tiny viewports: the value yields to the HUD corner line instead of covering it
+          if (ty - fz / 2 - 2 >= F.y + 17 * kf) tag(cx, ty, txt, txtCol, fz, 'center');
         }
       }
       // nasion
@@ -976,7 +1023,7 @@
       if (p) {
         drawPoint(L.tip, p, col, glow);
         if (p >= 1) {
-          const off = small ? 7 : 10;
+          const off = (small ? 7 : 10) * kf;
           const side = 1;
           const x = Math.max(L.nas[0], L.tip[0], L.sn[0]) + off;
           const xl = Math.min(L.nas[0], L.tip[0], L.sn[0]) - off;
@@ -984,10 +1031,10 @@
           dimLine(lx, L.nas[1], lx, L.sn[1], lineCol);
           if (!small) {
             const txt = `NAS ${jitterVal(now, 'nasal', P.nasal)}`;
-            const ty = L.sn[1] - 3;
+            const ty = L.sn[1] - 3 * kf;
             nasY = ty;
-            if (side > 0) tag(Math.min(lx + 4, fr - monoW(txt, 9)), ty, txt, txtCol, 9, 'left');
-            else tag(Math.max(lx - 4, fl + monoW(txt, 9)), ty, txt, txtCol, 9, 'right');
+            if (side > 0) tag(Math.min(lx + 4 * kf, fr - monoW(txt, fz)), ty, txt, txtCol, fz, 'left');
+            else tag(Math.max(lx - 4 * kf, fl + monoW(txt, fz)), ty, txt, txtCol, fz, 'right');
           }
         }
       }
@@ -997,11 +1044,11 @@
         drawPoint(L.chL, p, col, glow);
         drawPoint(L.chR, p, col, glow);
         if (p >= 1 && !small) {
-          const yy = Math.max(L.chL[1], L.chR[1]) + 7;
+          const yy = Math.max(L.chL[1], L.chR[1]) + 7 * kf;
           dimLine(L.chL[0], yy, L.chR[0], yy, lineCol);
           const txt = `ML ${jitterVal(now, 'ml', P.ml)}`;
-          const cx = U.clamp((L.chL[0] + L.chR[0]) / 2, fl + monoW(txt, 9) / 2 + 2, fr - monoW(txt, 9) / 2 - 2);
-          tag(cx, yy + 7, txt, txtCol, 9, 'center');
+          const cx = U.clamp((L.chL[0] + L.chR[0]) / 2, fl + monoW(txt, fz) / 2 + 2, fr - monoW(txt, fz) / 2 - 2);
+          tag(cx, yy + 7 * kf, txt, txtCol, fz, 'center');
         }
       }
       // face height N–GN along the left rail (rotated label)
@@ -1009,7 +1056,7 @@
       if (p) {
         drawPoint(L.gn, p, col, glow);
         if (p >= 1) {
-          const x = F.x + (small ? 9 : 12);
+          const x = F.x + (small ? 9 : 12) * kf;
           g.strokeStyle = ctx.rgba(col, 0.25);
           g.setLineDash([1, 2]);
           g.beginPath();
@@ -1023,10 +1070,10 @@
           if (!small) {
             const txt = `N-GN ${jitterVal(now, 'ngn', P.ngn)}`;
             g.save();
-            g.translate(x + 7, (L.nas[1] + L.gn[1]) / 2);
+            g.translate(x + 7 * kf, (L.nas[1] + L.gn[1]) / 2);
             g.rotate(-Math.PI / 2);
             recBoxes = false; // rotated: its box is not in panel space
-            tag(0, 0, txt, txtCol, 9, 'center');
+            tag(0, 0, txt, txtCol, fz, 'center');
             recBoxes = true;
             g.restore();
           }
@@ -1046,9 +1093,9 @@
           g.stroke();
           g.setLineDash([]);
           const txt = `BZY ${jitterVal(now, 'bzy', P.bzy)}`;
-          let by = L.zyR[1] + 9;
-          if (Math.abs(by - nasY) < 13) by = nasY + 13;
-          tag(fr - 3, by, txt, txtCol, 9, 'right');
+          let by = L.zyR[1] + 9 * kf;
+          if (Math.abs(by - nasY) < 13 * kf) by = nasY + 13 * kf;
+          tag(fr - 3, by, txt, txtCol, fz, 'right');
         }
       }
       recBoxes = false;
@@ -1057,7 +1104,7 @@
     function drawScan(now, scanY, dir, locked) {
       const x0 = F.x + 4;
       const w = F.w - 8;
-      const bh = small ? 22 : 34;
+      const bh = (small ? 22 : 34) * kf;
       g.globalAlpha = locked ? 0.4 : 1;
       if (dir > 0) g.drawImage(bandSprite, x0, scanY - bh, w, bh);
       else {
@@ -1073,39 +1120,53 @@
       g.globalAlpha = locked ? 0.5 : 0.9;
       g.fillRect(x0, Math.round(scanY), w, 1);
       g.globalAlpha = 1;
-      g.fillRect(x0 - 1, Math.round(scanY) - 2, 3, 5);
-      g.fillRect(x0 + w - 2, Math.round(scanY) - 2, 3, 5);
+      const cw = Math.round(3 * Math.min(kf, 1.5));
+      const chh = Math.round(5 * Math.min(kf, 1.5));
+      g.fillRect(x0 - 1, Math.round(scanY) - (chh >> 1), cw, chh);
+      g.fillRect(x0 + w - cw + 1, Math.round(scanY) - (chh >> 1), cw, chh);
     }
 
     // The height readout rides the scan line, but yields to the HUD corner text, the landmark
     // labels and the ID lock. Drawn after the landmarks so it can test their boxes.
     function drawScanLabel(scanY, dir, locked) {
       if (small || locked) return;
-      const ly = scanY + (dir > 0 ? 7 : -7);
-      if (ly < F.y + 19 || ly > F.y + F.h - 18) return;
+      const fz = Math.round(9 * kf);
+      const ly = scanY + (dir > 0 ? 7 : -7) * kf;
+      if (ly < F.y + 19 * kf || ly > F.y + F.h - 18 * kf) return;
       const v = U.clamp((fy0 - scanY) / S, -1.2, 1.2);
       const txt = `Y${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
-      const tw = monoW(txt, 9);
-      const rx = F.x + F.w - 9;
-      if (hitsBox(rx - tw - 2, ly - 6.5, tw + 4, 12)) return;
-      g.font = MONO(9);
+      const tw = monoW(txt, fz);
+      const rx = F.x + F.w - 9 * kf;
+      if (hitsBox(rx - tw - 2, ly - fz * 0.72, tw + 4, fz * 1.34)) return;
+      g.font = MONO(fz);
       g.textBaseline = 'middle';
-      tag(rx, ly, txt, ctx.rgba('holo', 0.9), 9, 'right');
+      tag(rx, ly, txt, ctx.rgba('holo', 0.9), fz, 'right');
     }
 
     function drawFaceHud(now, yawDeg, pitchDeg, locked) {
-      g.font = MONO(9);
+      const fz = Math.round(9 * kf);
+      g.font = MONO(fz);
       g.textBaseline = 'middle';
       g.textAlign = 'left';
-      const x0 = F.x + 8;
-      const x1 = F.x + F.w - 8;
-      const y0 = F.y + 11;
-      const y1 = F.y + F.h - 10;
+      const x0 = F.x + 8 * kf;
+      const x1 = F.x + F.w - 8 * kf;
+      const y0 = F.y + 11 * kf;
+      const y1 = F.y + F.h - 10 * kf;
       const yaw = `${yawDeg >= 0 ? '+' : '−'}${Math.abs(yawDeg).toFixed(small ? 0 : 1)}°`;
+      // status line (bottom-right; top-left on small viewports)
+      let s;
+      if (st === 'hold') s = 'ID LOCK';
+      else if (st === 'xref') s = 'X-REF';
+      else if (st === 'converge') s = 'CONVERGE';
+      else if (st === 'build') s = 'MESHING';
+      else s = `SCAN ${Math.min(99, Math.floor(((now - stT0) / 1000 / (SCAN_S / speed)) * 100))}%`;
       g.fillStyle = ctx.rgba('holo', 0.8);
       if (small) {
-        g.textAlign = 'right';
-        g.fillText(yaw, x1, y0);
+        // yaw yields when the status would run into it (very narrow viewports)
+        if (monoW(s, fz) + monoW(yaw, fz) + 6 <= x1 - x0) {
+          g.textAlign = 'right';
+          g.fillText(yaw, x1, y0);
+        }
       } else {
         g.fillText(`MESH ${mesh.nv}V`, x0, y0);
         g.textAlign = 'right';
@@ -1114,13 +1175,6 @@
         g.textAlign = 'left';
         g.fillText(`P${pitchDeg >= 0 ? '+' : '−'}${Math.abs(pitchDeg).toFixed(1)}°`, x0, y1);
       }
-      // status line bottom-right
-      let s;
-      if (st === 'hold') s = 'ID LOCK';
-      else if (st === 'xref') s = 'X-REF';
-      else if (st === 'converge') s = 'CONVERGE';
-      else if (st === 'build') s = 'MESHING';
-      else s = `SCAN ${Math.min(99, Math.floor(((now - stT0) / 1000 / (SCAN_S / speed)) * 100))}%`;
       const blink = st === 'hold' ? (RM ? true : ((now / 260) | 0) % 2 === 0) : true;
       g.fillStyle = locked ? C.threat : C.holo;
       if (small) {
@@ -1134,20 +1188,20 @@
       if (locked) {
         // subject lock brackets around the head
         const hw = S * 0.92;
-        const hh = Math.min(S * 1.16, fy0 - F.y - 17);
-        const pulse = RM ? 0 : Math.sin(now / 160) * 1.5;
-        g.lineWidth = 1.2;
-        bracket(g, fx0 - hw - pulse, fy0 - hh - pulse, (hw + pulse) * 2, (hh + pulse) * 2, small ? 6 : 10, C.threat);
+        const hh = Math.min(S * 1.16, fy0 - F.y - 17 * kf);
+        const pulse = RM ? 0 : Math.sin(now / 160) * 1.5 * kf;
+        g.lineWidth = 1.2 * Math.min(kf, 1.5);
+        bracket(g, fx0 - hw - pulse, fy0 - hh - pulse, (hw + pulse) * 2, (hh + pulse) * 2, (small ? 6 : 10) * kf, C.threat);
         g.lineWidth = 1;
         if (!small) {
-          g.font = UI(9);
-          setLS('1.5px');
+          g.font = UI(fz);
+          setLS(`${(1.5 * kf).toFixed(1)}px`);
           const txt = 'SUBJECT · WRAITH';
           const tw = g.measureText(txt).width;
           const tx = U.clamp(fx0 - tw / 2, F.x + 6, F.x + F.w - 6 - tw);
-          const ty = Math.max(F.y + 23, fy0 - hh - 7);
+          const ty = Math.max(F.y + 23 * kf, fy0 - hh - 7 * kf);
           g.fillStyle = 'rgba(40,0,8,0.8)';
-          g.fillRect(tx - 3, ty - 6, tw + 6, 12);
+          g.fillRect(tx - 3 * kf, ty - fz * 0.67, tw + 6 * kf, fz * 1.34);
           g.fillStyle = '#ff6b7e';
           g.fillText(txt, tx, ty + 0.5);
           setLS('0px');
@@ -1162,22 +1216,29 @@
         ['DEPTH', `${readout.depth.toFixed(1)}`, (readout.depth - 36) / 10, 'DEPTH MM'],
         ['IR', `${readout.ir.toFixed(1)}°`, (readout.ir - 35.5) / 2, 'IR °C'],
       ];
+      const fz = Math.round(9 * k);
+      const fv = Math.round(11 * k);
       g.textBaseline = 'middle';
       if (wide) {
         const rh = RD.h / 3;
         items.forEach((it, i) => {
           const y = RD.y + i * rh;
-          g.font = UI(9);
-          setLS('1.4px');
+          const col = i === 0 ? 'phosphor' : 'holo';
+          g.font = UI(fz);
+          setLS(`${(1.4 * k).toFixed(1)}px`);
           g.fillStyle = C.dim;
           g.textAlign = 'left';
-          g.fillText(it[3], RD.x, y + 6);
+          g.fillText(it[3], RD.x, y + 6 * k);
           setLS('0px');
-          g.font = MONO(11);
+          g.font = MONO(fv);
           g.fillStyle = C.ice;
           g.textAlign = 'right';
-          g.fillText(it[1], RD.x + RD.w, y + 6);
-          barTicks(RD.x, y + 14, RD.w, 3, it[2], i === 0 ? 'phosphor' : 'holo');
+          g.fillText(it[1], RD.x + RD.w, y + 6 * k);
+          barTicks(RD.x, y + 14 * k, RD.w, Math.round(3 * k), it[2], col);
+          // strip layouts have room under each gauge for its trend line
+          const ty = y + 21 * k;
+          const th = rh - 21 * k - 7;
+          if (strip && th >= 14) trend(RD.x, ty, RD.w, th, rhist[i], col);
         });
         g.textAlign = 'left';
         return;
@@ -1185,21 +1246,48 @@
       const cw = RD.w / 3;
       items.forEach((it, i) => {
         const x = RD.x + i * cw;
-        g.font = UI(9);
-        setLS('1px');
+        g.font = UI(fz);
+        setLS(`${k.toFixed(1)}px`);
         g.fillStyle = C.dim;
         g.textAlign = 'left';
-        g.fillText(it[0], x + 1, RD.y + 5);
+        g.fillText(it[0], x + 1, RD.y + 5 * k);
         setLS('0px');
-        g.font = MONO(RD.w >= 180 ? 11 : 10);
+        g.font = MONO(Math.round((RD.w >= 180 ? 11 : 10) * k));
         g.fillStyle = C.ice;
-        g.fillText(it[1], x + 1, RD.y + 16);
-        barTicks(x + 1, RD.y + RD.h - 5, cw - 6, 2, it[2], i === 0 ? 'phosphor' : 'holo');
+        g.fillText(it[1], x + 1, RD.y + 16 * k);
+        barTicks(x + 1, RD.y + RD.h - 5 * k, cw - 6, Math.round(2 * k), it[2], i === 0 ? 'phosphor' : 'holo');
       });
     }
 
+    // readout trend: newest sample on the right, faint grid
+    function trend(x, y, w, h, buf, col) {
+      g.strokeStyle = ctx.rgba('holo', 0.08);
+      g.beginPath();
+      for (let q = 0; q <= 2; q++) {
+        const yy = Math.round(y + (h * q) / 2) + 0.5;
+        g.moveTo(x, yy);
+        g.lineTo(x + w, yy);
+      }
+      g.stroke();
+      const n = RH;
+      const step = w / (n - 1);
+      g.beginPath();
+      for (let j = 0; j < n; j++) {
+        const v = buf[(rhHead + j) % n];
+        const px = x + j * step;
+        const py = y + h - v * h;
+        if (j) g.lineTo(px, py);
+        else g.moveTo(px, py);
+      }
+      g.strokeStyle = ctx.rgba(col, 0.75);
+      g.stroke();
+      const last = buf[(rhHead + n - 1) % n];
+      g.fillStyle = C.ice;
+      g.fillRect(x + w - 1.5, y + h - last * h - 1.5, 3, 3);
+    }
+
     function barTicks(x, y, w, h, v, col) {
-      const n = Math.max(6, Math.floor(w / 4));
+      const n = Math.max(6, Math.floor(w / (4 * k)));
       const on = Math.round(U.clamp(v, 0, 1) * n);
       const cw = w / n;
       g.fillStyle = ctx.rgba(col, 0.9);
@@ -1217,25 +1305,27 @@
       const r = CR;
       const x0 = r.x;
       const w = r.w;
+      const fz = Math.round(9 * k);
+      const f11 = Math.round(11 * k);
       let y = r.y + 1;
       const locked = st === 'hold' || (st === 'release' && cand.wraith);
       // header
       g.textBaseline = 'middle';
-      g.font = UI(9);
-      setLS('1.2px');
+      g.font = UI(fz);
+      setLS(`${(1.2 * k).toFixed(1)}px`);
       g.textAlign = 'left';
       let head;
       if (st === 'xref' || (xref && (st === 'converge' || locked))) head = w < 120 ? 'X-REF' : `X-REF·${xref.split(' ')[0]}`;
       else head = w < 120 ? 'DB·CIV' : 'DB · CIVREG';
       g.fillStyle = xref ? C.amber : C.dim;
-      g.fillText(head, x0, y + 5);
+      g.fillText(head, x0, y + 5 * k);
       setLS('0px');
-      g.font = MONO(9);
+      g.font = MONO(fz);
       g.textAlign = 'right';
       g.fillStyle = C.holo2;
-      g.fillText(fmtCount(scanned), x0 + w, y + 5);
+      g.fillText(fmtCount(scanned), x0 + w, y + 5 * k);
       g.textAlign = 'left';
-      y += 12;
+      y += 12 * k;
       // query progress bar
       let prog;
       if (st === 'scan') prog = ((now - stT0) / 1000 / (SCAN_S / speed)) * 0.8;
@@ -1243,25 +1333,34 @@
       else if (st === 'build') prog = 0;
       else prog = 1;
       prog = U.clamp(prog, 0, 1);
+      const pbh = Math.round(2 * Math.min(k, 1.5));
       g.fillStyle = ctx.rgba('holo', 0.12);
-      g.fillRect(x0, y, w, 2);
+      g.fillRect(x0, y, w, pbh);
       g.fillStyle = locked ? C.threat : xref ? C.amber : C.holo;
-      g.fillRect(x0, y, Math.round(w * prog), 2);
+      g.fillRect(x0, y, Math.round(w * prog), pbh);
       if (!locked && !RM) {
         const sx = x0 + ((now / 7) % w);
         g.fillStyle = ctx.rgba('ice', 0.7);
-        g.fillRect(sx, y, 4, 2);
+        g.fillRect(sx, y, 4 * k, pbh);
       }
-      y += 5;
-      // card
-      const nRej = r.h >= 110 ? Math.floor((r.h - 18 - 56 - 6) / 12) : r.h >= 80 ? Math.floor((r.h - 18 - 44 - 4) / 12) : 0;
-      const ch = Math.round(U.clamp(r.h - 18 - Math.max(0, nRej) * 12 - 4, 26, wide ? 60 : 56));
-      const th = Math.round(Math.min(ch, w * 0.36));
+      y += 5 * k;
+      // card, with the reject log under it, or beside it in columns when the carousel is wide
+      const lineH = Math.round(12 * k);
+      const side = w >= 440 * k;
+      const cardW = side ? Math.round(Math.min(w * 0.4, 250 * k)) : w;
+      let nRej = 0;
+      let ch;
+      if (side) ch = Math.round(U.clamp(r.y + r.h - y - 4, 26, 60 * k));
+      else {
+        nRej = r.h >= 110 * k ? Math.floor((r.h - 80 * k) / lineH) : r.h >= 80 * k ? Math.floor((r.h - 66 * k) / lineH) : 0;
+        ch = Math.round(U.clamp(r.h - 18 * k - Math.max(0, nRej) * lineH - 4, 26, (wide ? 60 : 56) * k));
+      }
+      const th = Math.round(Math.min(ch, cardW * 0.36));
       const tw = Math.round(th * (TW / THH));
       const cardY = y;
       g.save();
       g.beginPath();
-      g.rect(x0, cardY, w, ch);
+      g.rect(x0, cardY, cardW, ch);
       g.clip();
       // slot-machine roll: small nudge while flipping fast, a real roll once it slows down
       const fp = RM ? 1 : U.clamp((now - flipT) / Math.min(flipIv * 0.5, 110), 0, 1);
@@ -1271,41 +1370,48 @@
       g.drawImage(thumbs, cand.thumb * TW * 2, 0, TW * 2, THH * 2, x0, yy, tw, th);
       g.strokeStyle = locked ? C.threat : ctx.rgba('holo', 0.5);
       g.strokeRect(x0 + 0.5, yy + 0.5, tw - 1, th - 1);
-      const tx = x0 + tw + 5;
-      const colW = x0 + w - tx;
-      const lh = ch / 3;
+      const tx = x0 + tw + 5 * k;
+      const colW = x0 + cardW - tx;
+      // a squat card has no room for three text lines: keep the id and the score
+      const two = ch < 34 * k;
+      const lh = ch / (two ? 2 : 3);
+      const lastL = two ? 1.5 : 2.5;
       const pct = cand.pct;
       const ptxt = `${pct.toFixed(1)}%`;
       if (cand.wraith) {
         // "WRAITH · 94.1%" on one line when it fits, the MATCH stamp gets the bottom line
-        const one = colW >= monoW(`WRAITH · ${ptxt}`, 11) + 2;
-        g.font = MONO(9);
+        const one = !two && colW >= monoW(`WRAITH · ${ptxt}`, f11) + 2;
+        g.font = MONO(fz);
         g.fillStyle = locked ? '#ff8a98' : C.dim;
         if (one) g.fillText(cand.id, tx, yy + lh * 0.5);
-        g.font = MONO(11, 700);
+        g.font = MONO(f11, 700);
         g.fillStyle = C.ice;
         const ly = yy + lh * (one ? 1.5 : 0.5);
         g.fillText('WRAITH', tx, ly);
         g.fillStyle = C.threat;
-        if (one) g.fillText(`· ${ptxt}`, tx + monoW('WRAITH ', 11), ly);
+        if (one) g.fillText(`· ${ptxt}`, tx + monoW('WRAITH ', f11), ly);
         else g.fillText(ptxt, tx, yy + lh * 1.5);
       } else {
-        g.font = MONO(9);
+        g.font = MONO(fz);
         g.fillStyle = C.dim;
         g.fillText(cand.id, tx, yy + lh * 0.5);
-        g.font = MONO(w < 120 ? 9 : 10);
-        g.fillStyle = cand.partial ? C.amber : C.text;
-        g.fillText(cand.partial && w >= 120 ? 'PARTIAL' : cand.cls, tx, yy + lh * 1.5);
-        g.font = MONO(11, 700);
+        if (!two) {
+          g.font = MONO(Math.round((w < 120 ? 9 : 10) * k));
+          g.fillStyle = cand.partial ? C.amber : C.text;
+          g.fillText(cand.partial && w >= 120 ? 'PARTIAL' : cand.cls, tx, yy + lh * 1.5);
+        }
+        g.font = MONO(f11, 700);
         g.fillStyle = pct > 80 ? C.amber : pct > 55 ? C.text : C.dim;
-        g.fillText(ptxt, tx, yy + lh * 2.5);
-        const bx = tx + monoW(ptxt, 11) + 5;
-        const bw = x0 + w - bx;
+        g.fillText(ptxt, tx, yy + lh * lastL);
+        const bx = tx + monoW(ptxt, f11) + 5 * k;
+        const bw = x0 + cardW - bx;
         if (bw > 14) {
+          const bh = Math.round(3 * Math.min(k, 1.5));
+          const by = Math.round(yy + lh * lastL) - (bh >> 1);
           g.fillStyle = ctx.rgba('holo', 0.14);
-          g.fillRect(bx, Math.round(yy + lh * 2.5) - 1, bw, 3);
+          g.fillRect(bx, by, bw, bh);
           g.fillStyle = pct > 80 ? C.amber : C.holo2;
-          g.fillRect(bx, Math.round(yy + lh * 2.5) - 1, Math.round((bw * pct) / 100), 3);
+          g.fillRect(bx, by, Math.round((bw * pct) / 100), bh);
         }
       }
       g.globalAlpha = 1;
@@ -1316,25 +1422,26 @@
         const p = RM ? 1 : U.clamp(age / 220, 0, 1);
         const sc = RM ? 1 : 1 + (1 - U.ease.outCubic(p)) * 1.2;
         const fade = st === 'release' ? U.clamp(1 - (now - stT0) / (REL_S * 1000), 0, 1) : 1;
-        const fs = colW >= 110 ? 12 : colW >= 80 ? 10 : 9;
+        const fs = Math.round((colW >= 110 * k ? 12 : colW >= 80 * k ? 10 : 9) * k);
         g.font = DISP(fs);
-        setLS(colW >= 80 ? '2px' : '1px');
-        const sw = g.measureText('MATCH').width + 10;
-        const sh = fs + 8;
-        const sx = Math.min(tx + colW / 2, x0 + w - sw / 2 - 1);
-        const sy = cardY + lh * 2.5;
+        setLS(colW >= 80 * k ? `${(2 * k).toFixed(1)}px` : `${k.toFixed(1)}px`);
+        const sw = g.measureText('MATCH').width + 10 * k;
+        const sh = fs + 8 * k;
+        const sx = Math.min(tx + colW / 2, x0 + cardW - sw / 2 - 1);
+        const sy = cardY + lh * lastL;
         g.save();
         g.translate(sx, sy);
-        g.rotate(colW < 80 ? -0.06 : -0.1);
+        g.rotate(colW < 80 * k ? -0.06 : -0.1);
         g.scale(sc, sc);
         g.globalAlpha = p * fade;
         g.fillStyle = 'rgba(40,0,8,0.72)';
         g.fillRect(-sw / 2, -sh / 2, sw, sh);
         g.strokeStyle = C.threat;
-        g.lineWidth = 1.5;
+        g.lineWidth = 1.5 * Math.min(k, 1.5);
         g.strokeRect(-sw / 2, -sh / 2, sw, sh);
-        g.lineWidth = 0.8;
-        g.strokeRect(-sw / 2 + 2.5, -sh / 2 + 2.5, sw - 5, sh - 5);
+        g.lineWidth = 0.8 * Math.min(k, 1.5);
+        const ins = 2.5 * k;
+        g.strokeRect(-sw / 2 + ins, -sh / 2 + ins, sw - ins * 2, sh - ins * 2);
         g.fillStyle = C.threat;
         g.textAlign = 'center';
         g.fillText('MATCH', 1, 1);
@@ -1343,25 +1450,72 @@
         g.textAlign = 'left';
         g.lineWidth = 1;
       }
-      y = cardY + ch + 4;
       // reject log
-      g.font = MONO(9);
-      for (let i = 0; i < nRej; i++) {
-        const c = rejects[rejects.length - 1 - i];
-        if (!c) break;
-        const ry = y + i * 12 + 5;
-        const a = 0.85 - i * (0.55 / Math.max(1, nRej));
-        g.globalAlpha = a;
-        g.fillStyle = C.threat;
-        g.fillText('×', x0, ry);
-        g.fillStyle = C.dim;
-        g.fillText(c.id, x0 + 9, ry);
-        g.textAlign = 'right';
-        g.fillStyle = C.text;
-        g.fillText(`${c.pct.toFixed(1)}%`, x0 + w, ry);
-        g.textAlign = 'left';
+      let lx = x0;
+      let ly0 = cardY + ch + 4;
+      let rows = nRej;
+      let ncol = 1;
+      let colWd = w;
+      const gapC = Math.round(16 * k);
+      if (side) {
+        lx = x0 + cardW + gapC;
+        ly0 = cardY;
+        const regW = x0 + w - lx;
+        ncol = Math.max(1, Math.floor((regW + gapC) / (170 * k + gapC)));
+        colWd = (regW - (ncol - 1) * gapC) / ncol;
+        rows = Math.max(0, Math.floor((r.y + r.h - ly0) / lineH));
+        g.strokeStyle = ctx.rgba('holo', 0.12);
+        g.beginPath();
+        g.moveTo(Math.round(lx - gapC / 2) + 0.5, cardY);
+        g.lineTo(Math.round(lx - gapC / 2) + 0.5, r.y + r.h - 2);
+        g.stroke();
       }
-      g.globalAlpha = 1;
+      const total = rows > 0 ? Math.min(rejects.length, rows * ncol) : 0;
+      if (!total) return;
+      // The log is text-heavy on big layouts (100+ rows), so it lives in its own layer that is
+      // redrawn only when it changed, at most ~8x/s; every frame just blits it.
+      const lw = Math.ceil(side ? x0 + w - lx : w);
+      const lhh = Math.ceil(rows * lineH);
+      const sig = `${lw}|${lhh}|${rows}|${ncol}|${colWd}|${fz}|${cv.dpr}`;
+      if (sig !== rejSig || (rejVer !== rejDrawnVer && now - rejAt > 120)) {
+        rejSig = sig;
+        rejDrawnVer = rejVer;
+        rejAt = now;
+        drawRejects(lw, lhh, total, rows, colWd, gapC, lineH, fz);
+      }
+      g.drawImage(rejCv, 0, 0, rejCv.width, rejCv.height, lx, ly0, lw, lhh);
+    }
+
+    let rejCv = null;
+    let rejSig = '';
+    let rejAt = -1e9;
+    let rejDrawnVer = -1;
+    function drawRejects(lw, lhh, total, rows, colWd, gapC, lineH, fz) {
+      const dpr = cv.dpr;
+      if (!rejCv) rejCv = document.createElement('canvas');
+      rejCv.width = Math.max(1, Math.round(lw * dpr));
+      rejCv.height = Math.max(1, Math.round(lhh * dpr));
+      const c2 = rejCv.getContext('2d');
+      c2.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c2.clearRect(0, 0, lw, lhh);
+      c2.font = MONO(fz);
+      c2.textBaseline = 'middle';
+      // narrow columns drop the FR- registry prefix so the score never touches the id
+      const short = colWd < monoW('FR-0000-XX 00.0%', fz) + 9 * k + 6;
+      for (let i = 0; i < total; i++) {
+        const c = rejects[rejects.length - 1 - i];
+        const cx = Math.floor(i / rows) * (colWd + gapC);
+        const ry = (i % rows) * lineH + 5 * k;
+        c2.globalAlpha = 0.85 - i * (0.55 / Math.max(1, total));
+        c2.textAlign = 'left';
+        c2.fillStyle = C.threat;
+        c2.fillText('×', cx, ry);
+        c2.fillStyle = C.dim;
+        c2.fillText(short ? c.id.slice(3) : c.id, cx + 9 * k, ry);
+        c2.textAlign = 'right';
+        c2.fillStyle = C.text;
+        c2.fillText(`${c.pct.toFixed(1)}%`, cx + colWd, ry);
+      }
     }
 
     /* ------------------------------------------------------------ frame */
@@ -1422,9 +1576,10 @@
       g.restore();
       drawFaceHud(now, yawDeg, pitchDeg, locked);
       if (glitch) {
-        g.font = MONO(9);
+        const fz = Math.round(9 * kf);
+        g.font = MONO(fz);
         g.textBaseline = 'middle';
-        tag(fx0, F.y + F.h * 0.5, small ? 'CORRUPT' : 'SIGNAL CORRUPT', C.neon, 9, 'center');
+        tag(fx0, F.y + F.h * 0.5, small ? 'CORRUPT' : 'SIGNAL CORRUPT', C.neon, fz, 'center');
       }
       drawReadouts(now);
       drawCarousel(now);

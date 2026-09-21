@@ -1,12 +1,14 @@
 /* FEDLIGHT · P-13 event log
    Newest-first log of every `alert` on the bus, padded with local SOC chatter (never re-emitted).
-   Rows are a capped, recycled DOM list: once 60 exist, the oldest node is rewritten and moved to the
-   top instead of creating a new one. A canvas activity strip above the list shows events per bin. */
+   Rows are a capped, recycled DOM list: once MAX_ROWS exist, the oldest node is rewritten and moved
+   to the top instead of creating a new one. The list is backfilled with older chatter so it always
+   covers the panel height. A canvas activity strip above the list shows events per bin. */
 (() => {
   'use strict';
 
-  const MAX_ROWS = 60;
-  const ROW_H = 15;
+  const MAX_ROWS = 72;
+  // row pitch per size mode (must match alerts.css)
+  const ROW_H = { base: 15, big: 21, two: 29 };
   const BIN_MS = 500;
   const NBINS = 256;
   const LEVELS = { info: 1, warn: 2, crit: 3 };
@@ -72,10 +74,17 @@
     for (const t of [HD.tz.label, 'SEV', 'SRC', 'MESSAGE']) head.appendChild(U.el('span', 'al-h' + (t === 'SRC' ? ' al-h-src' : ''), t));
     const list = U.el('ol', 'al-list');
     list.setAttribute('aria-live', 'off');
+    // the list slides inside a clipped viewport, so a new row never covers the strip or header
+    const listBox = U.el('div', 'al-listbox');
+    listBox.appendChild(list);
     strip.append(stripLbl, sparkBox, epsEl);
-    root.append(strip, head, list);
+    root.append(strip, head, listBox);
     ctx.el.appendChild(root);
     const spark = ctx.canvas({ parent: sparkBox, className: 'al-spark-cv' });
+    // the strip's width also moves when its neighbours do (webfont swap, EPS digits), not only
+    // when the panel resizes; refit its buffer so the bars never stretch
+    if (window.ResizeObserver) new ResizeObserver(() => spark.fit()).observe(sparkBox);
+    let rowH = ROW_H.base;
 
     let total = 0;
     let crits = 0;
@@ -115,6 +124,23 @@
       };
     }
 
+    function fillRow(li, level, source, msg, ts, ambient) {
+      const p = li._p;
+      const t = fmtTime(ts);
+      p.ts = ts;
+      p.hh.textContent = t.hh;
+      p.mid.nodeValue = t.mid;
+      p.ms.textContent = t.ms;
+      p.sev.textContent = LABEL[level];
+      p.src.textContent = source || '—';
+      p.msg.textContent = msg;
+      li.className = `al-row is-${level}${ambient ? ' is-amb' : ''}`;
+      li.title = `${t.hh}${t.mid}${t.ms} ${HD.tz.label}  [${LABEL[level]}]  ${source || ''}  ${msg}`;
+      total++;
+      if (level === 'crit') crits++;
+      ctx.meta(`${total} EVT · ${crits} CRIT`);
+    }
+
     // `ambient` rows come from this panel's own chatter; the rest arrived on the bus
     function addRow(level, source, msg, ts, { ambient = false, animate = true } = {}) {
       if (!LEVELS[level]) level = 'info';
@@ -126,26 +152,15 @@
         rowCount++;
       }
       const p = li._p;
-      const t = fmtTime(ts);
-      p.hh.textContent = t.hh;
-      p.mid.nodeValue = t.mid;
-      p.ms.textContent = t.ms;
-      p.sev.textContent = LABEL[level];
-      p.src.textContent = source || '—';
-      p.msg.textContent = msg;
-      li.className = `al-row is-${level}${ambient ? ' is-amb' : ''}`;
-      li.title = `${t.hh}${t.mid}${t.ms} ${HD.tz.label}  [${LABEL[level]}]  ${source || ''}  ${msg}`;
+      fillRow(li, level, source, msg, ts, ambient);
       list.insertBefore(li, list.firstChild);
 
-      total++;
-      if (level === 'crit') crits++;
-      ctx.meta(`${total} EVT · ${crits} CRIT`);
       bins[binIdx] = Math.min(255, bins[binIdx] + 1);
       binLvl[binIdx] = Math.max(binLvl[binIdx], LEVELS[level]);
 
       if (!animate) return;
       if (!RM) {
-        list.animate([{ transform: `translateY(-${ROW_H}px)` }, { transform: 'translateY(0)' }], {
+        list.animate([{ transform: `translateY(-${rowH}px)` }, { transform: 'translateY(0)' }], {
           duration: 260,
           easing: 'cubic-bezier(.2,.8,.2,1)',
         });
@@ -240,7 +255,55 @@
       bins[k]++;
       binLvl[k] = Math.max(binLvl[k], LEVELS[b[0]]);
     }
+    // older than the backlog: a plausible background rate, so a wide strip (up to NBINS bins)
+    // does not open half empty
+    for (let back = Math.floor((now0 - tb) / BIN_MS) + 1; back < NBINS; back++) {
+      if (!R.chance(0.2)) continue;
+      const k = (binIdx - back + NBINS) % NBINS;
+      bins[k] = 1;
+      binLvl[k] = R.chance(0.25) ? 2 : 1;
+    }
     scheduleChatter();
+
+    // Older chatter appended under the oldest row until the list holds `n` rows, so a panel made
+    // taller never shows an empty log. Old CRITs are filed as WARN, like the opening backlog.
+    function backfill(n) {
+      const want = Math.min(MAX_ROWS, n);
+      const now = Date.now();
+      while (rowCount < want) {
+        const last = list.lastElementChild;
+        const ts = (last && last._p.ts ? last._p.ts : now) - R.int(900, 3800);
+        const [lvl0, src, msg] = pickChatter();
+        const lvl = lvl0 === 'crit' ? 'warn' : lvl0;
+        const li = makeRow();
+        rowCount++;
+        fillRow(li, lvl, src, msg, ts, true);
+        list.appendChild(li);
+        const back = Math.floor((now - ts) / BIN_MS);
+        if (back < NBINS) {
+          const k = (binIdx - back + NBINS) % NBINS;
+          bins[k] = Math.min(255, bins[k] + 1);
+          binLvl[k] = Math.max(binLvl[k], LEVELS[lvl]);
+        }
+      }
+    }
+
+    // size modes: two-line rows for narrow, tall logs; larger type for full-screen logs
+    let mode = '';
+    function resize(w, h) {
+      const two = (w < 300 && h >= 220) || (w < 360 && h >= 480);
+      const big = !two && w >= 900 && h >= 420;
+      const m = two ? 'two' : big ? 'big' : 'base';
+      if (m !== mode) {
+        mode = m;
+        root.classList.toggle('is-2l', two);
+        root.classList.toggle('is-big', big);
+        rowH = ROW_H[m];
+      }
+      // the strip and the optional column header sit above the list
+      const top = (big ? 20 : 15) + (!two && h >= 180 ? (big ? 18 : 14) : 0);
+      backfill(Math.ceil((h - top) / rowH) + 1);
+    }
 
     /* ------------------------------------------------------ activity strip */
 
@@ -249,7 +312,9 @@
       const w = spark.w;
       const h = spark.h;
       spark.clear();
-      const pitch = 3;
+      // wider strips get wider bars, so the visible window stays inside the bin ring (NBINS)
+      const pitch = U.clamp(Math.round(w / 150), 3, 8);
+      const bw = pitch > 4 ? pitch - 2 : 2;
       const frac = (now - binStart) / BIN_MS;
       const n = Math.min(NBINS - 1, Math.ceil(w / pitch) + 1);
       g.fillStyle = HD.rgba(C.holo, 0.1);
@@ -261,7 +326,7 @@
       for (let i = 0; i < n; i++) {
         let s = 0;
         for (let j = 0; j < 6; j++) s += bins[(binIdx - i - j + NBINS * 2) % NBINS];
-        const x = w - 3 - (i + frac) * pitch;
+        const x = w - 2 - bw / 2 - (i + frac) * pitch;
         const y = h - 1.5 - Math.min(h - 3, s * 2.2);
         if (i) g.lineTo(x, y);
         else g.moveTo(x, y);
@@ -270,7 +335,7 @@
       g.stroke();
       for (let i = 0; i < n; i++) {
         const k = (binIdx - i + NBINS) % NBINS;
-        const x = Math.round(w - 4 - (i + frac) * pitch);
+        const x = Math.round(w - 3 - bw - (i + frac) * pitch);
         if (x < -pitch) break;
         if ((binNo - i) % 20 === 0) {
           g.fillStyle = HD.rgba(C.holo, 0.1);
@@ -279,13 +344,13 @@
         const c = bins[k];
         if (!c) {
           g.fillStyle = HD.rgba(C.holo, 0.16);
-          g.fillRect(x, h - 2, 2, 1);
+          g.fillRect(x, h - 2, bw, 1);
           continue;
         }
-        const bh = Math.min(h - 1, 3 + (c - 1) * 3);
+        const bh = Math.min(h - 1, 3 + (c - 1) * Math.max(3, Math.round(h / 4)));
         const lv = binLvl[k];
         g.fillStyle = lv === 3 ? C.threat : lv === 2 ? C.amber : HD.rgba(C.holo, 0.85);
-        g.fillRect(x, h - 1 - bh, 2, bh);
+        g.fillRect(x, h - 1 - bh, bw, bh);
       }
       // scan head at the newest edge
       g.fillStyle = HD.rgba(C.ice, 0.7);
@@ -294,6 +359,7 @@
 
     return {
       fps: 20,
+      resize,
       tick(now) {
         if (now - binStart > NBINS * BIN_MS) {
           // back from a long pause (hidden tab / off screen): the whole window is stale

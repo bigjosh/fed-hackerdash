@@ -124,10 +124,20 @@ HD.panel('terminal', (ctx) => {
   // The block glyphs are painted once to a small canvas row: VT323 has no full-block glyph, and
   // the fallback font's wider blocks overlapped into mush at narrow widths.
   const printBanner = (a, b) => {
-    const all = bannerRows(a).concat([''], bannerRows(b));
-    const span = Math.max(...all.map((r) => r.length));
     const avail = Math.max(120, (ctx.width || 300) - 40);
-    const px = U.clamp(Math.floor(avail / span), 3, Math.round(fs * 0.5));
+    const cap = Math.round(fs * 0.5);
+    const two = bannerRows(a).concat([''], bannerRows(b));
+    const one = bannerRows(a + ' ' + b);
+    const span2 = Math.max(...two.map((r) => r.length));
+    const span1 = Math.max(...one.map((r) => r.length));
+    const px2 = U.clamp(Math.floor(avail / span2), 3, cap);
+    const px1 = Math.min(Math.floor(avail / span1), cap);
+    // a short or very wide glass gets one line of block letters: two stacked words would fill a
+    // strip top to bottom, or hug the left edge of a wall
+    const useOne = px1 >= 4 && (px1 >= px2 || rows < 9);
+    const all = useOne ? one : two;
+    const span = useOne ? span1 : span2;
+    const px = useOne ? px1 : px2;
     const pad = Math.ceil(px * 1.2); // room for the glow
     const w = span * px + pad * 2;
     const h = all.length * px + pad * 2;
@@ -474,16 +484,22 @@ HD.panel('terminal', (ctx) => {
   ])();
 
   // Agent Fed's recognition phrase: an old personal ad. First half is the challenge, second the countersign.
-  const AD = [
-    ['--------- PERSONALS · BOX 1997 ---------', 'dim term-pre'],
-    ['eyes like a puppy dog, lips made for sin.', 'br'],
-    ["you're not dreaming, i'm for real.", 'br'],
-    ['                    -- reply to LEWIS', 'dim term-pre'],
-    ['----------------------------------------', 'dim term-pre'],
-  ];
+  // The rules and the right-aligned sign-off are pre lines (they clip instead of wrapping), so they
+  // are cut to the glass width when printed: a narrow glass must still show "reply to LEWIS".
+  const AD = () => {
+    const w = U.clamp(cols - 1, 26, 40);
+    const side = '-'.repeat(Math.floor((w - 22) / 2));
+    return [
+      [side + ' PERSONALS · BOX 1997 ' + side, 'dim term-pre'],
+      ['eyes like a puppy dog, lips made for sin.', 'br'],
+      ["you're not dreaming, i'm for real.", 'br'],
+      [' '.repeat(w - 20) + '-- reply to LEWIS', 'dim term-pre'],
+      ['-'.repeat(w), 'dim term-pre'],
+    ];
+  };
   const scPersonals = () => [
     OP.cmd('grep -ri lewis /intel/personals/'),
-    OP.lines(AD, '', 18, 40),
+    OP.lines(AD(), '', 18, 40),
     OP.line('[?] recognition phrase on file: AGENT FED', 'dim'),
   ];
 
@@ -496,6 +512,46 @@ HD.panel('terminal', (ctx) => {
     lastScript = b;
     for (const o of b()) queue.push(o);
     queue.push(OP.pause(rand.range(900, 2100), true));
+  };
+
+  // A tall glass would sit half empty through the boot, so the kernel log runs longer when there are
+  // rows to fill. Sized when the op runs (the glass is measured by then), not when it is queued.
+  const DMESG = [
+    () => 'ghost0: link up, 10Gbps full-duplex',
+    () => 'nvme0n1: p1 p2 p3 (sealed)',
+    () => 'crypto: aes4096-gcm self-test passed',
+    () => 'random: crng init done',
+    () => 'phantom-tpm: sealed store unlocked',
+    () => 'ghostwall: ' + rand.int(180, 960) + ' rules loaded',
+    () => 'cpu' + rand.int(0, 31) + ': microcode rev 0x' + lc(U.randHex(6, rand)),
+    () => 'ghost-mesh: peer paris-edge-' + lc(U.randHex(3, rand)) + ' handshake ok',
+    () => 'relay: circuit ' + rand.int(2, 64) + ' built (3 hops)',
+    () => 'thermal: VX-9 VOIDCORE ' + rand.int(41, 78) + 'C',
+    () => 'ghost0: entered promiscuous mode',
+    () => 'audit: backlog limit raised to 8192',
+    () => 'dm-crypt: /dev/dm-' + rand.int(0, 3) + ' mapped (argon2id)',
+    () => 'uplinkd: key ring loaded (' + rand.int(12, 96) + ' keys)',
+    () => 'usb 3-' + rand.int(1, 4) + ': hardware token attached',
+    () => 'camnet: rtsp mux ready on :8554',
+    () => 'ghost1: carrier on fibre port ' + rand.int(1, 8),
+    () => 'nullsec-lsm: policy BLACK enforced',
+    () => 'watchdog: counter-trace sentinel armed',
+    () => 'ghost-mesh: ' + rand.int(3, 19) + ' onion relays reachable',
+    () => 'sd 0:0:0:0: [sda] write cache: enabled',
+    () => 'clocksource: paris ntp skew ' + rand.int(1, 9) + 'ms',
+    () => 'fb0: vt323 console ' + cols + 'x' + rows,
+    () => 'input: operator keyboard on tty/7',
+  ];
+  const dmesgFill = () => {
+    const extra = U.clamp(rows - 22, 0, 40);
+    if (!extra) return;
+    const pool = rand.shuffle(DMESG);
+    const arr = [];
+    for (let i = 0; i < extra; i++) {
+      const t = 0.15 + (0.35 * (i + 1)) / (extra + 1);
+      arr.push('[' + t.toFixed(3).padStart(7) + '] ' + pool[i % pool.length]());
+    }
+    queue.unshift(OP.lines(arr, 'dim', 8, 20));
   };
 
   const scBoot = () => [
@@ -511,6 +567,9 @@ HD.panel('terminal', (ctx) => {
       'booting phantom-kernel 6.6.6-nullsec ...',
       '[  0.001] initramfs unpack',
       '[  0.148] mount /dev/ghost0 -> /',
+    ], '', 14, 28),
+    OP.fn(dmesgFill),
+    OP.lines([
       '[  0.503] starting uplinkd',
       '[  0.884] tty/7 attached',
       ['[  ok  ] UPLINK SHELL READY', 'br'],
@@ -571,7 +630,7 @@ HD.panel('terminal', (ctx) => {
   });
   ctx.on('decrypt:complete', (d) => {
     const batch = [['[KEY] ' + (d && d.file ? d.file + ': ' : '') + ((d && d.key) || keyHex()), 'br']];
-    if (d && /LEWIS/.test(d.file || '')) batch.push(['[*] plaintext follows:', 'dim'], ...AD, ['[?] ...that is a recognition phrase. cover: LEWIS', 'dim']);
+    if (d && /LEWIS/.test(d.file || '')) batch.push(['[*] plaintext follows:', 'dim'], ...AD(), ['[?] ...that is a recognition phrase. cover: LEWIS', 'dim']);
     react(batch);
   });
   // someone's reflection just surfaced in the monitor glass (shell fx)
@@ -700,10 +759,11 @@ HD.panel('terminal', (ctx) => {
     '  override        buy +30s firewall (max 3)',
     '  hack <target>   breach anything',
     '  matrix          enter the construct',
+    '  layout          rearrange the console',
     '  ls  cat  ping  sudo  exit',
   ];
   const CMDS = ['help', 'status', 'whoami', 'clear', 'enhance', 'trace', 'intrude', 'override',
-    'hack', 'matrix', 'ls', 'cat', 'ping', 'sudo', 'exit'];
+    'hack', 'matrix', 'layout', 'ls', 'cat', 'ping', 'sudo', 'exit'];
 
   const runUserCommand = (raw) => {
     const v = String(raw).trim();
@@ -823,7 +883,7 @@ HD.panel('terminal', (ctx) => {
         ctx.emit('ui:fedhead', { source: 'terminal' });
         break;
       case 'lewis':
-        for (const [t, c] of AD) addLine(t, c);
+        for (const [t, c] of AD()) addLine(t, c);
         addLine('cover identity: LEWIS · status: FOR REAL', 'br');
         break;
       case 'kona':
@@ -842,6 +902,13 @@ HD.panel('terminal', (ctx) => {
         resumeAuto();
         return;
       }
+      case 'layout':
+        if (HD.layout && !HD.solo && innerWidth >= 1280 && innerHeight >= 700) {
+          addLine(HD.layout.editing ? '> grid locked. layout committed.' : '> grid unlocked. drag the glass, agent.', 'br');
+          input.blur();
+          ctx.emit('ui:layout', { source: 'terminal' });
+        } else addLine('layout: needs a wall-sized screen (1280x700+)');
+        break;
       case 'knock':
         addLine('knock, knock.', 'br');
         ctx.emit('ui:reflection', { source: 'terminal' });
@@ -1011,13 +1078,22 @@ HD.panel('terminal', (ctx) => {
   return {
     fps: 50,
     resize(w, h) {
-      // ~15px at 306 wide, 18px at 465, 20.5px at 626+
-      fs = Math.round(U.clamp(15 + (w - 306) * 0.019, 14.5, 20.5) * 2) / 2;
+      // ~15px at 306 wide, 18px at 465, 20.5px at 626, then a slow climb to 28px so a wall-sized glass
+      // reads as a terminal rather than a corner of small print. Short strips trade glyph size for
+      // lines: the height term keeps about eight rows on the glass.
+      const fsW = Math.min(15 + (w - 306) * 0.019, 20.5 + Math.max(0, w - 626) * 0.006);
+      const fsH = (h - 19) / (8 * 1.16);
+      fs = Math.round(U.clamp(Math.min(fsW, fsH), 13, 28) * 2) / 2;
       scr.style.fontSize = fs + 'px';
-      // VT323 advances ~0.4em; 26px of bezel inset and padding
-      cols = Math.max(24, Math.floor((w - 26) / (fs * 0.41)));
-      rows = Math.max(4, Math.floor((h - 19) / (fs * 1.16)));
+      // VT323 advances ~0.4em; 8px of bezel inset plus 0.6em of padding each side
+      cols = Math.max(24, Math.floor((w - 8 - fs * 1.2) / (fs * 0.41)));
+      rows = Math.max(4, Math.floor((h - 8 - fs * 0.73) / (fs * 1.16)));
       barW = U.clamp(cols - 33, 8, 26);
+      // katakana rain laid out for the old glass would leave a bare strip; restart it at the new size
+      if (matrixOn) {
+        matrixOn = false;
+        startMatrix(Math.max(300, matrixUntil - HD.now));
+      }
     },
     tick(now, dt) {
       if (matrixOn) {

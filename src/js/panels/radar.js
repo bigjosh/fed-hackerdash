@@ -10,6 +10,7 @@
   const RANGE = 12; // km at the outer range ring
   const TS = 7; // contacts move 7x real time so the picture visibly evolves between sweeps
   const ROWS = 7;
+  const LOGMAX = 30; // track log rows kept (a tall column shows them all)
   const MONO = (px, w = 500) => `${w} ${px}px "JetBrains Mono", Consolas, monospace`;
   const UI = (px) => `600 ${px}px "Chakra Petch", "Segoe UI", sans-serif`;
   const DISP = (px) => `${px}px Michroma, "Arial Black", sans-serif`;
@@ -226,7 +227,7 @@
       row.append(U.el('i', '', clock()), U.el('span', '', text));
       logList.prepend(row);
       logRows.unshift(row);
-      while (logRows.length > 12) logRows.pop().remove();
+      while (logRows.length > LOGMAX) logRows.pop().remove();
     }
     // boot history, oldest first (each line is prepended)
     logLine(`SWEEP ONLINE · X-BAND · ${RPM} RPM`, 'ok');
@@ -360,47 +361,83 @@
     /* ------------------------------------------------------------- layout */
 
     function layout(w, h) {
-      const big = Math.min(w, h) >= 380;
-      const rowH = big ? 13 : 11;
-      const TH = 15 + ROWS * rowH + 4;
-      const TW = w >= 340 ? 146 : 132;
-      const sideD = Math.min(h, w - TW - 6);
+      const m = Math.min(w, h);
+      const xl = m >= 560; // near full screen: larger type and a wider side column
+      const big = m >= 380;
+      const rowH = xl ? 17 : big ? 13 : 11;
+      const TH = (xl ? 19 : 15) + ROWS * rowH + 4;
+      const TWs = w >= 340 ? 146 : 132;
+      const sideD = Math.min(h, w - TWs - 6);
       const stackD = Math.min(w, h - TH - 4);
-      const mode = Math.max(sideD, stackD) < 150 || w < 130 ? 'solo' : stackD >= sideD ? 'stack' : 'side';
+      // short wide strips put everything side by side; otherwise the old side / stack / solo choice
+      const mode =
+        w >= h * 2.3 && w >= 480 && h < 400 && h >= TH + 8 ? 'row' :
+        Math.max(sideD, stackD) < 130 || w < 130 ? 'solo' :
+        stackD >= sideD ? 'stack' : 'side';
       let scope;
       let tb = null;
       let asc = null;
       let lg = null;
       if (mode === 'solo') scope = { x: 0, y: 0, w, h };
-      else if (mode === 'stack') {
+      else if (mode === 'row') {
+        // scope | table | A-scope | track log
+        const D = Math.min(h, Math.round(w * 0.4));
+        scope = { x: 0, y: 0, w: D, h };
+        let x = D + 6;
+        const TW = U.clamp(Math.round((w - x) * 0.26), 132, 250);
+        tb = { x, y: 5, w: TW, h: TH };
+        x += TW + 10;
+        const rw = w - x - 5;
+        if (rw >= 520) {
+          const LW = U.clamp(Math.round(rw * 0.36), 240, 380);
+          asc = { x, y: 5, w: rw - LW - 10, h: h - 10 };
+          lg = { x: w - LW - 5, y: 5, w: LW, h: h - 9 };
+        } else if (rw >= 120) {
+          let y = 5;
+          if (h >= 116) {
+            asc = { x, y, w: rw, h: 52 };
+            y += 58;
+          }
+          if (h - y >= 44) lg = { x, y, w: rw, h: h - y - 4 };
+        }
+      } else if (mode === 'stack') {
         const sh = Math.min(h - TH - 4, Math.round(w * 1.02));
         scope = { x: 0, y: 0, w, h: sh };
         let y = sh + 2;
         if (h - sh - TH >= 150) {
-          asc = { x: 6, y, w: w - 12, h: 56 };
-          y += 62;
+          const ah = xl ? 110 : 56;
+          asc = { x: 6, y, w: w - 12, h: ah };
+          y += ah + 6;
         }
         tb = { x: 5, y, w: w - 10, h: TH };
         y += TH + 4;
         if (h - y >= 44) lg = { x: 5, y, w: w - 10, h: h - y - 4 };
       } else {
+        // the column takes what the square scope leaves, within a readable width
+        const TW = U.clamp(w - h - 12, TWs, xl ? 400 : big ? 260 : TWs);
         scope = { x: 0, y: 0, w: w - TW - 6, h };
         const x = w - TW - 5;
         let y = 5;
         tb = { x, y, w: TW, h: TH };
         y += TH + 6;
         if (h - y >= 120) {
-          asc = { x, y, w: TW, h: 52 };
-          y += 58;
+          const ah = xl ? U.clamp(Math.round((h - y) * 0.3), 80, 220) : big ? 64 : 52;
+          asc = { x, y, w: TW, h: ah };
+          y += ah + 6;
         }
         if (h - y >= 44) lg = { x, y, w: TW, h: h - y - 4 };
       }
       const rad = Math.max(20, Math.min(scope.w, scope.h) / 2 - 3);
-      const bez = rad >= 110 ? 22 : rad >= 70 ? 19 : 14;
+      const bez = rad >= 300 ? 30 : rad >= 110 ? 22 : rad >= 70 ? 19 : 14;
       L = {
-        w, h, mode, scope, tb, asc, lg, rowH, big,
+        w, h, mode, scope, tb, asc, lg, rowH, big, xl,
         cx: Math.round(scope.x + scope.w / 2), cy: Math.round(scope.y + scope.h / 2),
         rad, rr: rad - bez, labels: rad >= 64, corners: [],
+        // type and mark sizes grow with the scope so a full-screen radar is not all hairlines
+        fs: rad >= 330 ? 12 : rad >= 230 ? 11 : rad >= 160 ? 10 : 9,
+        fc: scope.h >= 700 ? 11 : scope.h >= 480 ? 10 : 9,
+        fa: xl ? 11 : 9,
+        k: U.clamp(rad / 170, 1, 2),
       };
       const place = (el, r) => {
         el.hidden = !r;
@@ -408,8 +445,11 @@
       };
       place(tbl, tb);
       place(logBox, lg);
-      tbl.classList.toggle('is-big', big);
+      tbl.classList.toggle('is-big', big && !xl);
+      tbl.classList.toggle('is-xl', xl);
+      logBox.classList.toggle('is-xl', xl);
       tbl.classList.toggle('is-narrow', !!tb && tb.w < 200);
+      tbl.classList.toggle('is-tiny', !!tb && tb.w < 142);
       buildLayers();
     }
 
@@ -501,7 +541,7 @@
       g.beginPath();
       for (let deg = 0; deg < 360; deg += 5) {
         const a = (deg * Math.PI) / 180 - Math.PI / 2;
-        const len = deg % 30 === 0 ? 7 : deg % 10 === 0 ? 5 : 2.5;
+        const len = (deg % 30 === 0 ? 7 : deg % 10 === 0 ? 5 : 2.5) * L.k;
         const c0 = Math.cos(a);
         const s0 = Math.sin(a);
         g.moveTo(cx + c0 * (rad - 1), cy + s0 * (rad - 1));
@@ -510,10 +550,10 @@
       g.strokeStyle = rgba('holo', 0.6);
       g.stroke();
       if (L.labels) {
-        g.font = MONO(9);
+        g.font = MONO(L.fs);
         g.textAlign = 'center';
         g.textBaseline = 'middle';
-        const lr = rad - (rad >= 110 ? 14 : 12.5);
+        const lr = rad - (rad >= 300 ? 19 : rad >= 110 ? 14 : 12.5);
         for (let deg = 0; deg < 360; deg += 30) {
           const a = (deg * Math.PI) / 180 - Math.PI / 2;
           g.fillStyle = deg === 0 ? C.ice : rgba('text', 0.75);
@@ -525,25 +565,27 @@
         g.textBaseline = 'alphabetic';
         for (let i = 1; i <= 4; i++) {
           if (i < 4 && rr < 60) continue;
-          g.fillText(i === 4 ? '12 KM' : String(i * 3), cx + 3, cy + (rr * i) / 4 - 3);
+          g.fillText(i === 4 ? '12 KM' : String(i * 3), cx + 3 * L.k, cy + (rr * i) / 4 - 3 * L.k);
         }
         g.textAlign = 'left';
         g.textBaseline = 'alphabetic';
       }
       // own position
       g.strokeStyle = rgba('ice', 0.8);
+      const own = 4 * L.k;
       g.beginPath();
-      g.moveTo(cx - 4, cy + 0.5); g.lineTo(cx + 4, cy + 0.5);
-      g.moveTo(cx + 0.5, cy - 4); g.lineTo(cx + 0.5, cy + 4);
+      g.moveTo(cx - own, cy + 0.5); g.lineTo(cx + own, cy + 0.5);
+      g.moveTo(cx + 0.5, cy - own); g.lineTo(cx + 0.5, cy + own);
       g.stroke();
 
       // corner readouts (only where they clear the ring)
       L.corners = [];
       const sc = L.scope;
+      const fc = L.fc;
       const corner = (text, left, top, line, dyn, col) => {
-        const y = top ? sc.y + 11 + line * 11 : sc.y + sc.h - 5 - line * 11;
-        const room = cornerRoom(y - 8, y + 1, left);
-        g.font = MONO(9);
+        const y = top ? sc.y + fc + 2 + line * (fc + 2) : sc.y + sc.h - 5 - line * (fc + 2);
+        const room = cornerRoom(y - fc + 1, y + 1, left);
+        g.font = MONO(fc);
         const tw = g.measureText(dyn ? dyn : text).width;
         if (tw > room) return;
         const x = left ? sc.x + 5 : sc.x + sc.w - 5;
@@ -566,28 +608,48 @@
 
       // A-scope frame
       if (asc) {
+        const fa = L.fa;
         g.strokeStyle = rgba('holo', 0.3);
         g.strokeRect(asc.x + 0.5, asc.y + 0.5, asc.w - 1, asc.h - 1);
         g.fillStyle = 'rgba(1, 10, 14, 0.6)';
         g.fillRect(asc.x + 1, asc.y + 1, asc.w - 2, asc.h - 2);
-        g.font = UI(9);
+        g.font = UI(fa);
         g.fillStyle = rgba('holo', 0.85);
-        g.fillText('A-SCOPE', asc.x + 5, asc.y + 11);
-        const base = asc.y + asc.h - 13;
+        g.fillText('A-SCOPE', asc.x + 5, asc.y + fa + 2);
+        const base = asc.y + asc.h - fa - 4;
+        const top = asc.y + fa + 6;
+        const x0 = asc.x + 4;
+        const aw = asc.w - 8;
+        // wide or tall A-scopes get a km scale and amplitude grid instead of four bare ticks
+        const km = aw >= 300 ? 12 : 4;
         g.strokeStyle = rgba('holo', 0.25);
         g.beginPath();
-        g.moveTo(asc.x + 4, base + 0.5); g.lineTo(asc.x + asc.w - 4, base + 0.5);
-        for (let i = 0; i <= 4; i++) {
-          const x = Math.round(asc.x + 4 + ((asc.w - 8) * i) / 4) + 0.5;
-          g.moveTo(x, base); g.lineTo(x, base + 3);
+        g.moveTo(x0, base + 0.5); g.lineTo(x0 + aw, base + 0.5);
+        for (let i = 0; i <= km; i++) {
+          const x = Math.round(x0 + (aw * i) / km) + 0.5;
+          const major = km === 4 || i % 3 === 0;
+          g.moveTo(x, base); g.lineTo(x, base + (major ? 3 : 2));
         }
         g.stroke();
-        g.font = MONO(9);
+        if (base - top >= 60) {
+          g.strokeStyle = rgba('holo', 0.07);
+          g.beginPath();
+          for (let i = 1; i < 4; i++) {
+            const y = Math.round(base - ((base - top) * i) / 4) + 0.5;
+            g.moveTo(x0, y); g.lineTo(x0 + aw, y);
+          }
+          for (let i = 3; i < 12; i += 3) {
+            const x = Math.round(x0 + (aw * i) / 12) + 0.5;
+            g.moveTo(x, top); g.lineTo(x, base);
+          }
+          g.stroke();
+        }
+        g.font = MONO(fa);
         g.fillStyle = C.dim;
         for (let i = 0; i <= 4; i++) {
-          const x = asc.x + 4 + ((asc.w - 8) * i) / 4;
+          const x = x0 + (aw * i) / 4;
           g.textAlign = i === 0 ? 'left' : i === 4 ? 'right' : 'center';
-          g.fillText(String(i * 3), x, asc.y + asc.h - 3);
+          g.fillText(i === 4 && aw >= 300 ? '12 KM' : String(i * 3), x, asc.y + asc.h - 3);
         }
         g.textAlign = 'left';
       }
@@ -736,18 +798,20 @@
       watch(s);
       const g = s.getContext('2d');
       const text = tag(k);
-      g.font = MONO(9);
+      const fs = L.fs;
+      const lh = fs + 3;
+      g.font = MONO(fs);
       const w = Math.ceil(g.measureText(text).width) + 4;
       s.width = Math.ceil(w * d);
-      s.height = Math.ceil(12 * d);
+      s.height = Math.ceil(lh * d);
       g.setTransform(d, 0, 0, d, 0, 0);
-      g.font = MONO(9);
+      g.font = MONO(fs);
       g.fillStyle = 'rgba(2, 5, 10, 0.55)';
-      g.fillRect(0, 0, w, 12);
+      g.fillRect(0, 0, w, lh);
       g.fillStyle = C[k.col] || k.col;
       g.textBaseline = 'middle';
-      g.fillText(text, 2, 6.5);
-      k.spr = { cv: s, w, h: 12 };
+      g.fillText(text, 2, lh / 2 + 0.5);
+      k.spr = { cv: s, w, h: lh };
     }
 
     /* --------------------------------------------------------------- draw */
@@ -764,9 +828,11 @@
       const col = C[k.col];
       const sx = toX(k.px);
       const sy = toY(k.py);
+      const q = L.k;
+      const hd = Math.round(2 * q);
       for (let i = 0; i < k.hist.length; i += 2) {
         g.fillStyle = rgba(k.col, Math.max(0.08, 0.55 - i * (k === TGT ? 0.03 : 0.045)));
-        g.fillRect(toX(k.hist[i]) - 1, toY(k.hist[i + 1]) - 1, 2, 2);
+        g.fillRect(toX(k.hist[i]) - hd / 2, toY(k.hist[i + 1]) - hd / 2, hd, hd);
       }
       if (!k.tracked && age > PERIOD * 1000) return;
       k.vis = true;
@@ -794,33 +860,35 @@
         g.stroke();
         g.setLineDash([]);
         g.fillStyle = rgba('amber', 0.8);
-        for (const f of [0.5, 1]) g.fillRect(k.ex + vx * pl * f - 1.5, k.ey + vy * pl * f - 1.5, 3, 3);
+        for (const f of [0.5, 1]) g.fillRect(k.ex + vx * pl * f - 1.5 * q, k.ey + vy * pl * f - 1.5 * q, 3 * q, 3 * q);
       }
       const spr = glowSpr[k.col];
       if (spr && I > 0.03) {
-        const gs = k === TGT ? 30 : 22;
+        const gs = (k === TGT ? 30 : 22) * q;
         g.globalAlpha = Math.min(1, I * 1.15);
         g.drawImage(spr, sx - gs / 2, sy - gs / 2, gs, gs);
         g.globalAlpha = 1;
       }
       g.fillStyle = I > 0.55 ? C.ice : col;
       g.globalAlpha = 0.62 + 0.38 * I;
-      const bs = k === TGT ? 5 : 4;
+      const bs = Math.round((k === TGT ? 5 : 4) * q);
       if (k.kind === 'sat') {
+        const r = 3.5 * q;
         g.beginPath();
-        g.moveTo(sx, sy - 3.5); g.lineTo(sx + 3.5, sy); g.lineTo(sx, sy + 3.5); g.lineTo(sx - 3.5, sy);
+        g.moveTo(sx, sy - r); g.lineTo(sx + r, sy); g.lineTo(sx, sy + r); g.lineTo(sx - r, sy);
         g.fill();
       } else g.fillRect(Math.round(sx - bs / 2), Math.round(sy - bs / 2), bs, bs);
       g.globalAlpha = 1;
       if (k === TGT) {
-        const s = 7 + pulse * 2;
+        const s = (7 + pulse * 2) * q;
+        const c = 3 * q;
         g.strokeStyle = C.threat;
         g.lineWidth = 1.2;
         g.beginPath();
         for (const [ax, ay] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-          g.moveTo(sx + ax * s, sy + ay * (s - 3));
+          g.moveTo(sx + ax * s, sy + ay * (s - c));
           g.lineTo(sx + ax * s, sy + ay * s);
-          g.lineTo(sx + ax * (s - 3), sy + ay * s);
+          g.lineTo(sx + ax * (s - c), sy + ay * s);
         }
         g.stroke();
         g.lineWidth = 1;
@@ -867,21 +935,24 @@
       placed.length = 0;
       avoid.length = 0;
       for (const k of contacts) if (k.vis) avoid.push([k.sx, k.sy], [k.ex, k.ey], [(k.sx + k.ex) / 2, (k.sy + k.ey) / 2]);
-      if (TGT.vis) placed.push({ x: TGT.sx - 10, y: TGT.sy - 10, w: 20, h: 20 });
-      g.font = MONO(9);
+      const q = L.k;
+      const fs = L.fs;
+      if (TGT.vis) placed.push({ x: TGT.sx - 10 * q, y: TGT.sy - 10 * q, w: 20 * q, h: 20 * q });
+      g.font = MONO(fs);
       for (const k of [TGT, ...contacts.filter((c) => c !== TGT)]) {
         if (!k.vis) continue;
         if (!k.spr) labelSprite(k);
         const sp = k.spr;
         const two = k === TGT && L.rr >= 70;
-        const r = placeLabel(k.sx, k.sy, two ? Math.max(sp.w, 50) : sp.w, two ? 23 : sp.h, k === TGT ? 11 : 6);
+        const w2 = Math.ceil(fs * 5.6);
+        const r = placeLabel(k.sx, k.sy, two ? Math.max(sp.w, w2) : sp.w, two ? sp.h + fs + 2 : sp.h, (k === TGT ? 11 : 6) * q);
         g.globalAlpha = k.tracked ? 0.62 + 0.38 * k.I : 0.35;
         g.drawImage(sp.cv, r.x, r.y, sp.w, sp.h);
         if (two) {
           g.fillStyle = 'rgba(2, 5, 10, 0.55)';
-          g.fillRect(r.x, r.y + 12, 50, 11);
+          g.fillRect(r.x, r.y + sp.h, w2, fs + 2);
           g.fillStyle = rgba('threat', 0.9);
-          g.fillText(`${Math.round(k.spd)} KM/H`, r.x + 2, r.y + 21);
+          g.fillText(`${Math.round(k.spd)} KM/H`, r.x + 2, r.y + sp.h + fs);
         }
         g.globalAlpha = 1;
       }
@@ -889,14 +960,16 @@
       if (link) {
         const txt = `Δ${link.d.toFixed(1)}KM`;
         const tw = g.measureText(txt).width + 4;
+        const th = fs + 2;
         const x = link.x - tw / 2;
-        const r = placeLabel(0, 0, tw, 11, 0, [[x, link.y - 5], [x, link.y - 18], [x, link.y + 8], [x - tw / 2 - 6, link.y - 5], [x + tw / 2 + 6, link.y - 5]]);
+        const y = link.y - th / 2;
+        const r = placeLabel(0, 0, tw, th, 0, [[x, y], [x, y - th - 2], [x, y + th + 2], [x - tw / 2 - 6, y], [x + tw / 2 + 6, y]]);
         // secondary readout: never drawn over a contact label or blip
         if (r.s < 1) {
           g.fillStyle = 'rgba(2, 5, 10, 0.72)';
-          g.fillRect(r.x, r.y, tw, 11);
+          g.fillRect(r.x, r.y, tw, th);
           g.fillStyle = rgba('holo', 0.95);
-          g.fillText(txt, r.x + 2, r.y + 8.5);
+          g.fillText(txt, r.x + 2, r.y + fs - 0.5);
         }
       }
     }
@@ -1017,12 +1090,13 @@
       if (jam) {
         const jr = HD.rng(jamSeed + Math.floor(now / (RM ? 1e9 : 400)));
         g.fillStyle = rgba('amber', 0.8);
-        g.font = MONO(9);
+        g.font = MONO(L.fs);
+        const q = L.k;
         for (let i = 0; i < 4; i++) {
           const x = cx + (jr() - 0.5) * rr * 1.3;
           const y = cy + (jr() - 0.5) * rr * 1.3;
-          g.fillRect(x - 1.5, y - 1.5, 3, 3);
-          if (rr >= 60) g.fillText('?', x + 4, y - 3);
+          g.fillRect(x - 1.5 * q, y - 1.5 * q, 3 * q, 3 * q);
+          if (rr >= 60) g.fillText('?', x + 4 * q, y - 3 * q);
         }
       }
 
@@ -1039,24 +1113,26 @@
         const x = f.kind === 'lost' ? toX(f.x) : toX(k.tracked ? k.px || k.x : f.x);
         const y = f.kind === 'lost' ? toY(f.y) : toY(k.tracked ? k.py || k.y : f.y);
         const a = 1 - age / life;
-        g.font = MONO(9);
+        const q = L.k;
+        g.font = MONO(L.fs);
         if (f.kind === 'lost') {
+          const c = 4 * q;
           g.strokeStyle = rgba('dim', a);
           g.beginPath();
-          g.moveTo(x - 4, y - 4); g.lineTo(x + 4, y + 4);
-          g.moveTo(x + 4, y - 4); g.lineTo(x - 4, y + 4);
+          g.moveTo(x - c, y - c); g.lineTo(x + c, y + c);
+          g.moveTo(x + c, y - c); g.lineTo(x - c, y + c);
           g.stroke();
           g.fillStyle = rgba('dim', a);
-          g.fillText('LOST', x + 6, y + 10);
+          g.fillText('LOST', x + 6 * q, y + 10 * q);
         } else {
           const col = f.kind === 'vox' ? 'threat' : 'amber';
           const p = RM ? 0.6 : (age % 1.2) / 1.2;
           g.strokeStyle = rgba(col, a * (1 - p));
           g.beginPath();
-          g.arc(x, y, 4 + p * 16, 0, TAU);
+          g.arc(x, y, (4 + p * 16) * q, 0, TAU);
           g.stroke();
           g.fillStyle = rgba(col, Math.min(1, a * 1.5));
-          g.fillText(f.kind === 'vox' ? 'VOX ID' : 'NEW', x + 7, y + 11);
+          g.fillText(f.kind === 'vox' ? 'VOX ID' : 'NEW', x + 7 * q, y + 11 * q);
         }
       }
       g.restore();
@@ -1064,21 +1140,22 @@
 
       if (jam && rr >= 50) {
         const on = RM || Math.floor(now / 170) % 2 === 0;
-        g.font = DISP(rr >= 90 ? 10 : 9);
+        const fe = rr >= 300 ? 14 : rr >= 180 ? 12 : rr >= 90 ? 10 : 9;
+        g.font = DISP(fe);
         const txt = 'ECM JAMMING';
         const tw = g.measureText(txt).width;
         const x = cx - tw / 2;
         const y = cy + rr * 0.55;
         g.fillStyle = 'rgba(30, 0, 12, 0.8)';
-        g.fillRect(x - 6, y - 11, tw + 12, 15);
+        g.fillRect(x - 6, y - fe - 2, tw + 12, fe + 6);
         g.strokeStyle = on ? C.neon : rgba('neon', 0.4);
-        g.strokeRect(x - 6.5, y - 11.5, tw + 13, 16);
+        g.strokeRect(x - 6.5, y - fe - 2.5, tw + 13, fe + 7);
         g.fillStyle = on ? C.neon : rgba('neon', 0.6);
         g.fillText(txt, x, y);
       }
 
       // dynamic corner readouts
-      g.font = MONO(9);
+      g.font = MONO(L.fc);
       for (const c of L.corners) {
         let txt = '';
         if (c.key === 'swp') txt = `SWP ${U.pad(((sweep * 180) / Math.PI).toFixed(1), 5)}°`;
@@ -1095,10 +1172,11 @@
 
     function drawAScope(g, now) {
       const a = L.asc;
+      const fa = L.fa;
       const x0 = a.x + 4;
       const x1 = a.x + a.w - 4;
-      const base = a.y + a.h - 13;
-      const top = a.y + 15;
+      const base = a.y + a.h - fa - 4;
+      const top = a.y + fa + 6;
       const n = Math.max(20, Math.floor((x1 - x0) / 2));
       const hits = [];
       for (const k of contacts) {
@@ -1136,16 +1214,16 @@
         g.moveTo(gx, top - 2); g.lineTo(gx, base);
         g.stroke();
         g.setLineDash([]);
-        g.font = MONO(9);
+        g.font = MONO(fa);
         g.fillStyle = C.threat;
-        const txt = 'TGT';
+        const txt = a.w >= 300 ? `TGT ${rangeOf(TGT).toFixed(1)}` : 'TGT';
         const tw = g.measureText(txt).width;
-        g.fillText(txt, Math.min(gx + 3, x1 - tw), top + 6);
+        g.fillText(txt, Math.min(gx + 3, x1 - tw), top + fa - 3);
       }
-      g.font = MONO(9);
+      g.font = MONO(fa);
       g.fillStyle = C.dim;
       g.textAlign = 'right';
-      g.fillText(`BRG ${U.pad(Math.round((sweep * 180) / Math.PI) % 360, 3)}°`, a.x + a.w - 5, a.y + 11);
+      g.fillText(`BRG ${U.pad(Math.round((sweep * 180) / Math.PI) % 360, 3)}°`, a.x + a.w - 5, a.y + fa + 2);
       g.textAlign = 'left';
     }
 

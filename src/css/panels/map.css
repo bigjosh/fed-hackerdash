@@ -37,6 +37,7 @@
   background: linear-gradient(180deg, rgba(30, 4, 12, 0.86), rgba(3, 9, 15, 0.86) 34px);
   border: 1px solid rgba(255, 35, 64, 0.5);
   clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+  zoom: var(--map-k, 1); /* set from JS: one notch larger on very large bodies */
 }
 [data-panel="map"] .map-tgt::before { /* red spine */
   content: "";
@@ -256,8 +257,16 @@ html.is-still [data-panel="map"] .map-hud.is-crit .map-vig { animation: none; op
   [data-panel="map"] .map-r-eta,
   [data-panel="map"] .map-r-hdg { display: none; }
 }
+@container (max-width: 330px) {
+  [data-panel="map"] .map-tgt-hd > .map-k { display: none; }
+}
+@container (max-height: 250px) {
+  [data-panel="map"] .map-r-near,
+  [data-panel="map"] .map-r-unit { display: none; }
+}
 @container (max-width: 470px) {
-  [data-panel="map"] .map-tgt { left: 23px; top: 19px; width: 176px; padding: 4px 7px 5px 8px; }
+  /* stays clear of the compass module on the right */
+  [data-panel="map"] .map-tgt { left: 23px; top: 19px; width: min(176px, calc(100cqw - 143px)); padding: 4px 7px 5px 8px; }
   [data-panel="map"] .map-r-unit,
   [data-panel="map"] .map-r-hdg,
   [data-panel="map"] .map-r-eta,

@@ -152,6 +152,7 @@
       reticle.classList.toggle('is-hot', !!hot);
       const panel = e.target.closest && e.target.closest('.panel');
       hoverCode = panel ? (panel.querySelector('.panel-code') || {}).textContent || '' : '';
+      reticle.classList.toggle('is-grab', editing && !!panel && !hot);
       tilt(panel, e);
     },
     { passive: true }
@@ -179,7 +180,8 @@
     reticle.style.transform = `translate3d(${px}px,${py}px,0)`;
     if (now - labelAt > 90) {
       labelAt = now;
-      reticleLabel.textContent = `X${U.pad(Math.max(0, px | 0), 4)} Y${U.pad(Math.max(0, py | 0), 4)}${hoverCode ? '\n' + hoverCode + ' // LOCK' : ''}`;
+      const verb = gest ? (gest.type === 'resize' ? 'SIZE' : 'MOVE') : editing ? 'GRAB' : 'LOCK';
+      reticleLabel.textContent = `X${U.pad(Math.max(0, px | 0), 4)} Y${U.pad(Math.max(0, py | 0), 4)}${hoverCode ? '\n' + hoverCode + ' // ' + verb : ''}`;
     }
     // holo-glove light trail
     while (pts.length && now - pts[0].t > 420) pts.shift();
@@ -193,12 +195,13 @@
     tctx.clearRect(0, 0, trail.width, trail.height);
     tctx.lineCap = 'round';
     tctx.lineJoin = 'round';
+    const heavy = gest ? 2.3 : 1; // the glove glows hotter while it holds something
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1];
       const b = pts[i];
       const life = 1 - (now - b.t) / 420;
-      tctx.strokeStyle = HD.rgba('holo', 0.5 * life);
-      tctx.lineWidth = 1 + 5 * life;
+      tctx.strokeStyle = HD.rgba(gest ? 'ice' : 'holo', (gest ? 0.65 : 0.5) * life);
+      tctx.lineWidth = (1 + 5 * life) * heavy;
       tctx.beginPath();
       tctx.moveTo(a.x, a.y);
       tctx.lineTo(b.x, b.y);
@@ -213,6 +216,7 @@
   let tiltRect = null;
   function tilt(panel, e) {
     if (HD.reducedMotion || !fine) return;
+    if (editing) panel = null; // the glass lies flat on the light table
     if (panel !== tiltPanel) {
       if (tiltPanel) {
         tiltPanel.classList.remove('is-hover');
@@ -230,6 +234,1207 @@
     panel.style.setProperty('--rx', (-ny * 2.4).toFixed(2) + 'deg');
   }
   addEventListener('scroll', () => (tiltRect = tiltPanel ? tiltPanel.getBoundingClientRect() : null), { passive: true });
+
+  /* ---------------------------------------------------------------- layout */
+  // LAYOUT mode (fixed desktop layout only): drag any panel to rearrange it, pull the glove nodes on
+  // its edges to resize it, all on a 24x12 snap grid. The arrangement is kept per viewer. Theatrics:
+  // the glass table tips back, panels lift off it and swing with their velocity, afterimages trail,
+  // the landing zone lights up, drops thunk and shockwave, resizes get CAD rulers and rematerialise.
+
+  const grid = $('#grid');
+  const hdEl = $('#hd');
+  const btnLayout = $('#btn-layout');
+  const layBar = $('#lay-bar');
+  const layCv = $('#lay-fx');
+  const lctx = layCv.getContext('2d');
+  const COLS = 24;
+  const ROWS = 12;
+  const LAY_KEY = 'fedlight.layout.v1';
+  const LAY_PAD = 28; // the fx canvas overhangs the grid so rulers and afterimages can leave it
+  // the stock arrangement, in snap units (the CSS grid-template-areas at double resolution)
+  const DEFAULT_LAYOUT = {
+    terminal: [0, 0, 6, 6], map: [6, 0, 12, 8], countdown: [18, 0, 6, 2], enhance: [18, 2, 6, 6],
+    netgraph: [0, 6, 4, 4], trace: [4, 6, 2, 6], decrypt: [6, 8, 4, 4], spectrum: [10, 8, 4, 2],
+    sysmon: [10, 10, 4, 2], radar: [14, 8, 4, 4], face: [18, 8, 2, 4], dossier: [20, 8, 4, 4], alerts: [0, 10, 4, 2],
+  };
+  const MIN_SIZE = { map: [6, 4], terminal: [4, 3], enhance: [4, 3], countdown: [4, 2], trace: [2, 4], face: [2, 3], radar: [3, 3], dossier: [3, 3], netgraph: [3, 3] };
+  const minOf = (id) => MIN_SIZE[id] || [3, 2];
+  const lpanels = [...grid.querySelectorAll('.panel[data-panel]')].filter((p) => DEFAULT_LAYOUT[p.dataset.panel]);
+  const byId = {};
+  for (const p of lpanels) byId[p.dataset.panel] = p;
+  const IDS = lpanels.map((p) => p.dataset.panel);
+  const wideMq = matchMedia('(min-width: 1280px) and (min-height: 700px)');
+  const canLayout = () => !HD.solo && wideMq.matches;
+  // damped spring step response: overshoots ~15% at 0.26 s, settled by ~1 s
+  const springy = (t) => (t >= 1.2 ? 1 : 1 - Math.exp(-7 * t) * Math.cos(12 * t));
+
+  let layout = null; // {id: {x, y, w, h, z}} while a custom arrangement is live
+  let editing = false;
+  let zTop = 0;
+  let gest = null; // the move/resize gesture in progress
+  let lastMovedId = 'map';
+  let flourishUntil = 0;
+  let G = { x: 0, y: 0, w: 1, h: 1, gap: 6, px: 1, py: 1 };
+  const anims = new Map(); // panel -> running transform animation
+  const fx = { rings: [], pulses: [], cells: [], sparks: [], ghosts: [], enterAt: 0, exitAt: -1e9, origin: { x: 0, y: 0 }, exitOrigin: { x: 0, y: 0 }, zoneAt: 0, zone: null };
+
+  const cloneDefault = () => {
+    const o = {};
+    IDS.forEach((id, i) => {
+      const [x, y, w, h] = DEFAULT_LAYOUT[id];
+      o[id] = { x, y, w, h, z: i + 1 };
+    });
+    return o;
+  };
+  const sameAsDefault = (l) =>
+    IDS.every((id) => {
+      const r = l[id];
+      const d = DEFAULT_LAYOUT[id];
+      return r.x === d[0] && r.y === d[1] && r.w === d[2] && r.h === d[3];
+    });
+  function validLayout(l) {
+    return (
+      !!l &&
+      IDS.every((id) => {
+        const r = l[id];
+        if (!r || ![r.x, r.y, r.w, r.h, r.z].every(Number.isInteger)) return false;
+        const [mw, mh] = minOf(id);
+        return r.w >= mw && r.h >= mh && r.x >= 0 && r.y >= 0 && r.x + r.w <= COLS && r.y + r.h <= ROWS;
+      })
+    );
+  }
+  function loadLayout() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LAY_KEY) || 'null');
+      if (raw && raw.v === 1 && validLayout(raw.panels)) return raw.panels;
+    } catch (err) {
+      /* storage blocked or corrupt: stock grid */
+    }
+    return null;
+  }
+  function saveLayout() {
+    try {
+      if (!layout || sameAsDefault(layout)) localStorage.removeItem(LAY_KEY);
+      else localStorage.setItem(LAY_KEY, JSON.stringify({ v: 1, panels: layout }));
+    } catch (err) {
+      /* a per-viewer convenience only */
+    }
+  }
+
+  function applyPanel(id) {
+    const r = layout[id];
+    const p = byId[id];
+    p.style.setProperty('--lx', r.x);
+    p.style.setProperty('--ly', r.y);
+    p.style.setProperty('--lw', r.w);
+    p.style.setProperty('--lh', r.h);
+    p.style.setProperty('--lz', r.z); // stacking applies only inside the custom-layout media block
+  }
+  function applyLayout() {
+    if (!layout) {
+      root.classList.remove('has-custom-layout');
+      for (const p of lpanels) {
+        for (const v of ['--lx', '--ly', '--lw', '--lh', '--lz']) p.style.removeProperty(v);
+      }
+      return;
+    }
+    root.classList.add('has-custom-layout');
+    IDS.forEach(applyPanel);
+    zTop = Math.max(...IDS.map((id) => layout[id].z));
+  }
+  function raise(id) {
+    if (layout[id].z === zTop) return;
+    layout[id].z = ++zTop;
+    if (zTop > 80) {
+      // renumber so z-index stays under the fx canvas
+      IDS.slice()
+        .sort((a, b) => layout[a].z - layout[b].z)
+        .forEach((k, i) => (layout[k].z = i + 1));
+      zTop = IDS.length;
+      IDS.forEach(applyPanel);
+    } else applyPanel(id);
+  }
+
+  function geo() {
+    const hr = hdEl.getBoundingClientRect();
+    const gap = parseFloat(getComputedStyle(root).getPropertyValue('--gap')) || 6;
+    const w = grid.clientWidth;
+    const h = grid.clientHeight;
+    G = { x: hr.left + grid.offsetLeft, y: hr.top + grid.offsetTop, w, h, gap, px: (w + gap) / COLS, py: (h + gap) / ROWS };
+    return G;
+  }
+  const uRect = (r) => ({ x: r.x * G.px, y: r.y * G.py, w: r.w * G.px - G.gap, h: r.h * G.py - G.gap });
+  const rectsOf = () => {
+    const o = {};
+    for (const p of lpanels) o[p.dataset.panel] = p.getBoundingClientRect();
+    return o;
+  };
+  function sizeLayFx() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = G.w + LAY_PAD * 2;
+    const h = G.h + LAY_PAD * 2;
+    layCv.width = Math.round(w * dpr);
+    layCv.height = Math.round(h * dpr);
+    layCv.style.width = w + 'px';
+    layCv.style.height = h + 'px';
+    layCv.__dpr = dpr;
+  }
+  function tagText(id) {
+    const r = layout[id];
+    const code = (byId[id].querySelector('.panel-code') || {}).textContent || id;
+    return `${code} · ${r.w}×${r.h} · X${U.pad(r.x)} Y${U.pad(r.y)}`;
+  }
+  function updateTag(id) {
+    const t = byId[id].querySelector('.lay-tag');
+    if (t) t.textContent = tagText(id);
+  }
+
+  /* ---- transform animations: FLIP morphs, the held card, throws, settles, shivers */
+
+  function setAnim(p, a) {
+    anims.set(p, a);
+    p.classList.add('is-lay-anim');
+  }
+  // settled: the morph ran to completion, so the panel now sits at its real geometry
+  function endAnim(p, settled) {
+    const a = anims.get(p);
+    if (!a) return;
+    anims.delete(p);
+    p.style.transform = '';
+    p.style.transformOrigin = '';
+    p.classList.remove('is-lay-anim');
+    if (a.kind === 'glide') {
+      // backstop: a flight dropped without docking must not leave the grab costume behind
+      p.classList.remove('is-grabbed');
+      titleRestore(p);
+      markOverlaps(a.id, null);
+      syncDragClass();
+    }
+    if (settled) bus.emit('layout:settled', { id: p.dataset.panel });
+  }
+  const flying = () => [...anims.values()].some((o) => o.kind === 'glide');
+  function syncDragClass() {
+    if (!(gest && gest.type === 'move') && !flying()) grid.classList.remove('is-dragging');
+  }
+  // land any card still in flight where it is (before an action that would otherwise cancel it)
+  function landGlides(except) {
+    const now = performance.now();
+    for (const [q, a] of [...anims]) if (a.kind === 'glide' && q !== except) dock(a, now);
+  }
+  const flipXf = (a, k) => {
+    const sx = Math.max(0.15, a.sx + (1 - a.sx) * k);
+    const sy = Math.max(0.15, a.sy + (1 - a.sy) * k);
+    return `translate3d(${(a.dx * (1 - k)).toFixed(1)}px,${(a.dy * (1 - k)).toFixed(1)}px,0) scale(${sx.toFixed(4)},${sy.toFixed(4)})`;
+  };
+  function startFlip(p, from, to, delay = 0) {
+    if (!from || !to || !to.width || !to.height || HD.reducedMotion) return;
+    const a = { kind: 'flip', t0: performance.now() + delay, dx: from.left - to.left, dy: from.top - to.top, sx: from.width / to.width, sy: from.height / to.height };
+    if (Math.abs(a.dx) < 0.5 && Math.abs(a.dy) < 0.5 && Math.abs(a.sx - 1) < 0.003 && Math.abs(a.sy - 1) < 0.003) return;
+    setAnim(p, a);
+    p.style.transformOrigin = '0 0';
+    p.style.transform = flipXf(a, 0); // same frame as the layout change: no flash at the new spot
+  }
+  // Morph every panel from `before` to wherever the current layout puts it (one forced layout).
+  function flipAll(before, delayOf) {
+    for (const p of lpanels) endAnim(p);
+    const after = rectsOf();
+    lpanels.forEach((p, i) => startFlip(p, before[p.dataset.panel], after[p.dataset.panel], delayOf ? delayOf(p, i) : 0));
+  }
+  const cardXf = (offX, offY, ox, oy, rx, ry, rz, sx, sy) =>
+    `translate3d(${offX.toFixed(1)}px,${offY.toFixed(1)}px,0) translate(${ox.toFixed(1)}px,${oy.toFixed(1)}px) perspective(1100px) rotateX(${rx.toFixed(2)}deg) rotateY(${ry.toFixed(2)}deg) rotateZ(${rz.toFixed(2)}deg) scale(${sx.toFixed(4)},${sy.toFixed(4)}) translate(${(-ox).toFixed(1)}px,${(-oy).toFixed(1)}px)`;
+
+  // A held glass card swings about the grab point: it leans into its velocity on underdamped springs.
+  function swing(a, dt) {
+    const hx = U.clamp((a.h / 2 - a.oy) / (a.h / 2 || 1), -1, 1);
+    const wx = U.clamp((a.w / 2 - a.ox) / (a.w / 2 || 1), -1, 1);
+    const tz = U.clamp(a.svx * 0.006 * hx - a.svy * 0.006 * wx, -9, 9);
+    const ty = U.clamp(a.svx * 0.011, -13, 13);
+    const tx = U.clamp(-a.svy * 0.011, -13, 13);
+    for (let left = dt; left > 1e-4; left -= 1 / 120) {
+      const h = Math.min(1 / 120, left);
+      a.vrz += (170 * (tz - a.rz) - 13 * a.vrz) * h;
+      a.vry += (170 * (ty - a.ry) - 13 * a.vry) * h;
+      a.vrx += (170 * (tx - a.rx) - 13 * a.vrx) * h;
+      a.rz += a.vrz * h;
+      a.ry += a.vry * h;
+      a.rx += a.vrx * h;
+    }
+  }
+  function releaseVelocity(a, now) {
+    const s = a.samples;
+    if (s.length < 2 || now - s[s.length - 1].t > 70) return { vx: 0, vy: 0 };
+    const f = s[0];
+    const l = s[s.length - 1];
+    const span = Math.max(16, l.t - f.t) / 1000;
+    return { vx: (l.x - f.x) / span, vy: (l.y - f.y) / span };
+  }
+  function zoneTrack(a, now) {
+    const r = layout[a.id];
+    const zx = U.clamp(Math.round(a.x / G.px), 0, COLS - r.w);
+    const zy = U.clamp(Math.round(a.y / G.py), 0, ROWS - r.h);
+    if (!a.zone || zx !== a.zone.x || zy !== a.zone.y) {
+      const first = !a.zone;
+      a.zone = { x: zx, y: zy, w: r.w, h: r.h };
+      fx.zoneAt = now;
+      if (!first) HD.audio.beep(2400, 14, 'square', 0.01);
+      markOverlaps(a.id, a.zone);
+    }
+  }
+  function ghostTrack(a, now, speed) {
+    if (HD.reducedMotion || speed < 140 || now - a.ghostAt < 34) return;
+    a.ghostAt = now;
+    fx.ghosts.push({ x: a.x, y: a.y, w: a.w, h: a.h, ox: a.ox, oy: a.oy, rz: a.rz, t: now });
+    if (fx.ghosts.length > 16) fx.ghosts.shift();
+  }
+
+  function stepAnim(p, a, now, dt) {
+    if (a.kind === 'flip') {
+      const t = (now - a.t0) / 1000;
+      if (t >= 1.15) return endAnim(p, true);
+      p.style.transform = flipXf(a, t < 0 ? 0 : springy(t));
+      return;
+    }
+    if (a.kind === 'drag' || a.kind === 'glide') {
+      let vx;
+      let vy;
+      if (a.kind === 'drag') {
+        a.x = U.clamp(a.gx - a.ox, -a.w * 0.6, G.w - a.w * 0.4);
+        a.y = U.clamp(a.gy - a.oy, -a.h * 0.3, G.h - 24);
+        const s = a.samples;
+        const l = s[s.length - 1];
+        const span = (l.t - s[0].t) / 1000;
+        const fresh = now - l.t < 60;
+        vx = fresh && span > 0.008 ? (l.x - s[0].x) / span : 0;
+        vy = fresh && span > 0.008 ? (l.y - s[0].y) / span : 0;
+        a.lift = HD.reducedMotion ? 1 : U.ease.outBack(Math.min(1, (now - a.t0) / 240));
+      } else {
+        // thrown: coast with friction, bounce off the table edge, then dock
+        a.x += a.gvx * dt;
+        a.y += a.gvy * dt;
+        const f = Math.exp(-4.6 * dt);
+        a.gvx *= f;
+        a.gvy *= f;
+        const wall = (x, y) => {
+          fx.rings.push({ x, y, t0: now, max: 70, dur: 420, c: 'neon' });
+          HD.audio.beep(180, 40, 'square', 0.02);
+        };
+        // only an outward-bound card bounces, so one thrown from past the edge coasts back in
+        if ((a.x < 0 && a.gvx < 0) || (a.x + a.w > G.w && a.gvx > 0)) {
+          a.gvx = -a.gvx * 0.5;
+          wall(a.x < 0 ? 0 : G.w, a.y + a.h / 2);
+        }
+        if ((a.y < 0 && a.gvy < 0) || (a.y + a.h > G.h && a.gvy > 0)) {
+          a.gvy = -a.gvy * 0.5;
+          wall(a.x + a.w / 2, a.y < 0 ? 0 : G.h);
+        }
+        vx = a.gvx;
+        vy = a.gvy;
+        if (Math.hypot(a.gvx, a.gvy) < 110 || now - a.gt0 > 700) {
+          dock(a, now);
+          return;
+        }
+      }
+      a.svx = U.damp(a.svx, vx, 14, dt);
+      a.svy = U.damp(a.svy, vy, 14, dt);
+      if (!HD.reducedMotion) swing(a, dt);
+      const s = 1 + 0.045 * a.lift;
+      p.style.transform = cardXf(a.x - a.bx, a.y - a.by, a.ox, a.oy, a.rx, a.ry, a.rz, s, s);
+      zoneTrack(a, now);
+      ghostTrack(a, now, Math.hypot(a.svx, a.svy));
+      return;
+    }
+    if (a.kind === 'settle') {
+      const t = (now - a.t0) / 1000;
+      if (t >= 1.1) return endAnim(p, true);
+      const k = 1 - springy(t);
+      // an impact squash as the card lands in its slot
+      const sq = a.squash && t < 0.28 && !HD.reducedMotion ? Math.sin((t / 0.28) * Math.PI) * 0.022 : 0;
+      const s = 1 + 0.045 * a.lift * k;
+      p.style.transform = cardXf(a.offX * k, a.offY * k, a.ox, a.oy, a.rx * k, a.ry * k, a.rz * k, s * (1 + sq * 0.6), s * (1 - sq));
+      return;
+    }
+    if (a.kind === 'shiver') {
+      const t = (now - a.t0) / 1000;
+      if (t >= 0.45) return endAnim(p);
+      const amp = a.amp * Math.exp(-8 * t);
+      p.style.transform = `translate3d(${(Math.sin(t * 75) * amp).toFixed(2)}px,${(Math.cos(t * 58) * amp * 0.5).toFixed(2)}px,0)`;
+    }
+  }
+
+  /* ---- gestures */
+
+  function markOverlaps(id, z) {
+    for (const k of IDS) {
+      if (k === id) continue;
+      const r = layout[k];
+      const hit = z && r.x < z.x + z.w && z.x < r.x + r.w && r.y < z.y + z.h && z.y < r.y + r.h;
+      byId[k].classList.toggle('is-overlap', !!hit);
+    }
+  }
+  function titleSwap(p, text) {
+    const t = p.querySelector('.panel-title');
+    if (!t) return;
+    if (!t.dataset.orig) t.dataset.orig = t.textContent;
+    U.scramble(t, text, { duration: 260, chars: U.CHARS.glyph });
+  }
+  function titleRestore(p) {
+    const t = p.querySelector('.panel-title');
+    if (!t || !t.dataset.orig) return;
+    U.scramble(t, t.dataset.orig, { duration: 420 });
+  }
+
+  function startMove(p, e, now) {
+    const id = p.dataset.panel;
+    const prev = anims.get(p);
+    const vr = prev ? p.getBoundingClientRect() : null; // read before endAnim wipes the transform
+    const caught = prev && prev.kind === 'glide' ? prev : null;
+    if (caught) anims.delete(p); // caught mid-air: keep the grab costume, swap the flight for the hand
+    else endAnim(p);
+    raise(id);
+    const b = uRect(layout[id]);
+    let vx = b.x;
+    let vy = b.y;
+    if (caught) (vx = caught.x), (vy = caught.y);
+    else if (vr) (vx = vr.left - G.x), (vy = vr.top - G.y);
+    const gx = e.clientX - G.x;
+    const gy = e.clientY - G.y;
+    gest = {
+      type: 'move', kind: 'drag', id, p, pid: e.pointerId, t0: now, bx: b.x, by: b.y, w: b.w, h: b.h,
+      ox: U.clamp(gx - vx, 0, b.w), oy: U.clamp(gy - vy, 0, b.h), x: vx, y: vy, gx, gy, sgx: gx, sgy: gy, svx: 0, svy: 0,
+      rx: caught ? caught.rx : 0, ry: caught ? caught.ry : 0, rz: caught ? caught.rz : 0,
+      vrx: caught ? caught.vrx : 0, vry: caught ? caught.vry : 0, vrz: caught ? caught.vrz : 0,
+      lift: 0, ghostAt: 0, moved: !!caught, zone: null,
+      samples: [{ x: gx, y: gy, t: now }],
+    };
+    if (caught) gest.t0 = now - 240; // already lifted
+    fx.zone = null;
+    setAnim(p, gest);
+    p.style.transformOrigin = '0 0';
+    p.classList.add('is-grabbed');
+    grid.classList.add('is-dragging');
+    reticle.classList.add('is-grabbing');
+    titleSwap(p, 'RELOCATING…');
+    HD.audio.chirp(260, 900, 90, 'sine', 0.03);
+  }
+  function startResize(p, edge, e, now) {
+    const id = p.dataset.panel;
+    endAnim(p);
+    raise(id);
+    const b = uRect(layout[id]);
+    const gx = e.clientX - G.x;
+    const gy = e.clientY - G.y;
+    gest = {
+      type: 'resize', id, p, pid: e.pointerId, edge, t0: now, l: b.x, t: b.y, r: b.x + b.w, b: b.y + b.h,
+      gx, gy, sgx: gx, sgy: gy, cur: b, snap: { ...layout[id] }, moved: false, atMin: false,
+    };
+    p.classList.add('is-resizing');
+    grid.classList.add('is-sizing');
+    titleSwap(p, 'RECALIBRATING…');
+    HD.audio.chirp(900, 420, 110, 'triangle', 0.03);
+  }
+  function resizeTrack(a) {
+    const dx = a.gx - a.sgx;
+    const dy = a.gy - a.sgy;
+    const [mw, mh] = minOf(a.id);
+    const minW = mw * G.px - G.gap;
+    const minH = mh * G.py - G.gap;
+    const e = a.edge;
+    let { l, t, r, b } = a;
+    if (e.includes('w')) l = U.clamp(a.l + dx, 0, a.r - minW);
+    if (e.includes('e')) r = U.clamp(a.r + dx, a.l + minW, G.w);
+    if (e.includes('n')) t = U.clamp(a.t + dy, 0, a.b - minH);
+    if (e.includes('s')) b = U.clamp(a.b + dy, a.t + minH, G.h);
+    a.cur = { x: l, y: t, w: r - l, h: b - t };
+    let x0 = Math.round(l / G.px);
+    let x1 = Math.round((r + G.gap) / G.px);
+    let y0 = Math.round(t / G.py);
+    let y1 = Math.round((b + G.gap) / G.py);
+    if (x1 - x0 < mw) e.includes('w') ? (x0 = x1 - mw) : (x1 = x0 + mw);
+    if (y1 - y0 < mh) e.includes('n') ? (y0 = y1 - mh) : (y1 = y0 + mh);
+    x0 = U.clamp(x0, 0, COLS - mw);
+    y0 = U.clamp(y0, 0, ROWS - mh);
+    x1 = U.clamp(x1, x0 + mw, COLS);
+    y1 = U.clamp(y1, y0 + mh, ROWS);
+    const s = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    a.atMin = s.w === mw || s.h === mh;
+    if (s.x !== a.snap.x || s.y !== a.snap.y || s.w !== a.snap.w || s.h !== a.snap.h) {
+      a.snap = s;
+      fx.zoneAt = performance.now();
+      HD.audio.beep(1900 + s.w * s.h * 6, 14, 'square', 0.01);
+      markOverlaps(a.id, s);
+    }
+  }
+
+  function dockFx(id, label, now, quiet) {
+    const r = uRect(layout[id]);
+    const L = layout[id];
+    const p = byId[id];
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    fx.cells.push({ x: L.x, y: L.y, w: L.w, h: L.h, t0: now });
+    if (!HD.reducedMotion) {
+      const max = Math.hypot(r.w, r.h) * 0.62 + 40;
+      for (let i = 0; i < 3; i++) fx.rings.push({ x: cx, y: cy, t0: now + i * 90, max: max * (1 + i * 0.25), dur: 760, c: i === 1 ? 'ice' : 'holo' });
+      fx.pulses.push({ r, t0: now });
+      const per = 2 * (r.w + r.h);
+      for (let i = 0; i < 44; i++) {
+        let d = R.range(0, per);
+        let x;
+        let y;
+        let nx = 0;
+        let ny = 0;
+        if (d < r.w) (x = r.x + d), (y = r.y), (ny = -1);
+        else if ((d -= r.w) < r.h) (x = r.x + r.w), (y = r.y + d), (nx = 1);
+        else if ((d -= r.h) < r.w) (x = r.x + r.w - d), (y = r.y + r.h), (ny = 1);
+        else (d -= r.w), (x = r.x), (y = r.y + r.h - d), (nx = -1);
+        const v = R.range(60, 260);
+        fx.sparks.push({ x, y, vx: nx * v + R.range(-40, 40), vy: ny * v + R.range(-40, 40), s: R.pick([1.5, 2, 2, 3]), c: R.pick(['holo', 'ice', 'holo', 'neon']), life: R.range(0.35, 0.8), t: 0 });
+      }
+      if (fx.sparks.length > 400) fx.sparks.splice(0, fx.sparks.length - 400);
+      remat(p, 0);
+    }
+    if (!quiet) {
+      const st = U.el('span', 'lay-stamp', `${label} · ${L.w}×${L.h}`);
+      p.appendChild(st);
+      setTimeout(() => st.remove(), 1300);
+      HD.audio.beep(95, 150, 'sine', 0.07);
+      HD.audio.beep(190, 50, 'square', 0.018);
+    }
+  }
+  function remat(p, delay) {
+    const d = U.el('div', 'lay-remat');
+    d.style.setProperty('--d', `${delay | 0}ms`);
+    p.appendChild(d);
+    setTimeout(() => d.remove(), 720 + delay);
+    try {
+      p.animate(
+        [
+          { boxShadow: '-5px 0 0 rgba(255,42,109,0.8), 5px 0 0 rgba(95,243,255,0.8), 0 0 42px rgba(95,243,255,0.55)' },
+          { boxShadow: '-2px 0 0 rgba(255,42,109,0.4), 2px 0 0 rgba(95,243,255,0.4), 0 0 20px rgba(95,243,255,0.25)', offset: 0.4 },
+          { boxShadow: '0 10px 30px rgba(0,0,0,0.5)' },
+        ],
+        { duration: 460, delay, easing: 'ease-out' }
+      );
+    } catch (err) {
+      /* WAAPI missing: the scan wipe alone still reads */
+    }
+  }
+  function flashPanel(p, delay, cls = '') {
+    const f = U.el('i', ('lay-flash ' + cls).trim());
+    f.style.setProperty('--d', `${delay | 0}ms`);
+    p.appendChild(f);
+    setTimeout(() => f.remove(), 700 + delay);
+  }
+  function layoutChanged(id) {
+    if (id) lastMovedId = id;
+    IDS.forEach(updateTag);
+    saveLayout();
+    bus.emit('layout:change', { id: id || null });
+  }
+
+  function dock(a, now) {
+    const r = layout[a.id];
+    const p = a.p;
+    const nx = U.clamp(Math.round(a.x / G.px), 0, COLS - r.w);
+    const ny = U.clamp(Math.round(a.y / G.py), 0, ROWS - r.h);
+    const changed = nx !== r.x || ny !== r.y;
+    r.x = nx;
+    r.y = ny;
+    applyPanel(a.id);
+    const nb = uRect(r);
+    if (HD.reducedMotion) endAnim(p);
+    else setAnim(p, { kind: 'settle', t0: now, offX: a.x - nb.x, offY: a.y - nb.y, ox: a.ox, oy: a.oy, rx: a.rx, ry: a.ry, rz: a.rz, lift: a.lift, squash: a.moved });
+    p.classList.remove('is-grabbed');
+    if (gest === a) gest = null;
+    syncDragClass();
+    titleRestore(p);
+    const hit = [...grid.querySelectorAll('.panel.is-overlap')];
+    markOverlaps(a.id, null);
+    if (!a.moved) return;
+    for (const o of hit) if (!anims.has(o) && !HD.reducedMotion) setAnim(o, { kind: 'shiver', t0: now + 60, amp: 3.2 });
+    dockFx(a.id, changed ? 'DOCKED' : 'RETURNED', now);
+    layoutChanged(a.id);
+  }
+  function endResize(a, now) {
+    const p = a.p;
+    const r = layout[a.id];
+    const s = a.snap;
+    p.classList.remove('is-resizing');
+    grid.classList.remove('is-sizing');
+    titleRestore(p);
+    const hit = [...grid.querySelectorAll('.panel.is-overlap')];
+    markOverlaps(a.id, null);
+    gest = null;
+    if (s.x === r.x && s.y === r.y && s.w === r.w && s.h === r.h) return;
+    const from = p.getBoundingClientRect();
+    Object.assign(r, { x: s.x, y: s.y, w: s.w, h: s.h });
+    applyPanel(a.id);
+    startFlip(p, from, p.getBoundingClientRect());
+    for (const o of hit) if (!anims.has(o) && !HD.reducedMotion) setAnim(o, { kind: 'shiver', t0: now + 120, amp: 2.6 });
+    dockFx(a.id, 'RESIZED', now);
+    layoutChanged(a.id);
+  }
+  function endGesture(e) {
+    if (!gest || (e && e.pointerId !== gest.pid)) return;
+    const a = gest;
+    const now = performance.now();
+    reticle.classList.remove('is-grabbing');
+    if (a.type === 'resize') return endResize(a, now);
+    const v = releaseVelocity(a, now);
+    if (a.moved && e && e.type === 'pointerup' && !HD.reducedMotion && Math.hypot(v.vx, v.vy) > 650) {
+      // a throw: the card keeps flying, the gesture is over
+      a.kind = 'glide';
+      a.gvx = U.clamp(v.vx, -4200, 4200);
+      a.gvy = U.clamp(v.vy, -4200, 4200);
+      a.gt0 = now;
+      gest = null;
+      HD.audio.chirp(700, 240, 160, 'sine', 0.025);
+      return;
+    }
+    dock(a, now);
+  }
+
+  grid.addEventListener('pointerdown', (e) => {
+    if (!editing || gest || e.button > 0) return;
+    const now = performance.now();
+    if (now < flourishUntil) return;
+    const p = e.target.closest && e.target.closest('.panel');
+    if (!p || !byId[p.dataset.panel]) return;
+    e.preventDefault();
+    p.focus({ preventScroll: true });
+    geo();
+    const h = e.target.closest('.lay-h');
+    landGlides(h ? null : p);
+    if (h) startResize(p, h.dataset.edge, e, now);
+    else startMove(p, e, now);
+  });
+  addEventListener(
+    'pointermove',
+    (e) => {
+      if (!gest || e.pointerId !== gest.pid) return;
+      const now = performance.now();
+      gest.gx = e.clientX - G.x;
+      gest.gy = e.clientY - G.y;
+      if (!gest.moved && Math.hypot(gest.gx - gest.sgx, gest.gy - gest.sgy) > 4) gest.moved = true;
+      if (gest.type === 'resize') return resizeTrack(gest);
+      const s = gest.samples;
+      s.push({ x: gest.gx, y: gest.gy, t: now });
+      while (s.length > 2 && now - s[0].t > 90) s.shift();
+    },
+    { passive: true }
+  );
+  addEventListener('pointerup', endGesture);
+  addEventListener('pointercancel', endGesture);
+  addEventListener('blur', () => endGesture(null));
+
+  /* ---- keyboard: arrows nudge the focused panel a cell, shift+arrows resize it */
+
+  function nudge(id, dx, dy, dw, dh) {
+    landGlides();
+    const r = layout[id];
+    const [mw, mh] = minOf(id);
+    const n = { w: U.clamp(r.w + dw, mw, COLS), h: U.clamp(r.h + dh, mh, ROWS) };
+    n.x = U.clamp(r.x + dx, 0, COLS - n.w);
+    n.y = U.clamp(r.y + dy, 0, ROWS - n.h);
+    const p = byId[id];
+    const now = performance.now();
+    raise(id);
+    if (n.x === r.x && n.y === r.y && n.w === r.w && n.h === r.h) {
+      // hit the edge of the table: a dull knock and a shiver
+      HD.audio.beep(120, 60, 'square', 0.025);
+      if (!anims.has(p) && !HD.reducedMotion) setAnim(p, { kind: 'shiver', t0: now, amp: 3 });
+      return;
+    }
+    const from = p.getBoundingClientRect();
+    Object.assign(r, n);
+    applyPanel(id);
+    endAnim(p);
+    startFlip(p, from, p.getBoundingClientRect());
+    fx.cells.push({ x: r.x, y: r.y, w: r.w, h: r.h, t0: now });
+    if (dw || dh) {
+      if (now - (p.__stampAt || 0) > 450) {
+        p.__stampAt = now;
+        remat(p, 0);
+      }
+      HD.audio.beep(1500 + r.w * r.h * 8, 22, 'square', 0.014);
+    } else HD.audio.beep(2100, 16, 'square', 0.012);
+    layoutChanged(id);
+  }
+
+  /* ---- entering / leaving LAYOUT mode */
+
+  function decorate() {
+    for (const p of lpanels) {
+      if (p.querySelector(':scope > .lay-deco')) continue;
+      const d = U.el('div', 'lay-deco');
+      for (const edge of ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se']) {
+        const h = U.el('i', `lay-h lay-h-${edge}`);
+        h.dataset.edge = edge;
+        h.setAttribute('data-hot', '');
+        d.appendChild(h);
+      }
+      d.appendChild(U.el('span', 'lay-tag', tagText(p.dataset.panel)));
+      p.appendChild(d);
+      p.tabIndex = 0;
+    }
+  }
+  function undecorate() {
+    for (const p of lpanels) {
+      const d = p.querySelector(':scope > .lay-deco');
+      if (d) d.remove();
+      p.removeAttribute('tabindex');
+      p.classList.remove('is-overlap', 'is-grabbed', 'is-resizing');
+    }
+    grid.classList.remove('is-dragging', 'is-sizing');
+  }
+  function gridPoint(cx, cy) {
+    return { x: U.clamp(cx - G.x, 0, G.w), y: U.clamp(cy - G.y, 0, G.h) };
+  }
+  function flourish(frames, ms) {
+    if (HD.reducedMotion) return;
+    try {
+      grid.animate(frames, { duration: ms, easing: 'cubic-bezier(0.3, 0.7, 0.2, 1)' });
+    } catch (err) {
+      /* no WAAPI: skip the flourish */
+    }
+  }
+
+  function enterLayout(origin) {
+    if (editing || !canLayout()) return;
+    tilt(null);
+    editing = true;
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur) a.blur();
+    const before = rectsOf();
+    if (!layout) layout = cloneDefault();
+    applyLayout();
+    root.classList.add('is-layout');
+    flipAll(before);
+    decorate();
+    geo();
+    sizeLayFx();
+    layCv.hidden = false;
+    const now = performance.now();
+    const br = btnLayout.getBoundingClientRect();
+    fx.origin = origin || gridPoint(br.left + br.width / 2, br.top + br.height);
+    fx.enterAt = now;
+    fx.exitAt = -1e9;
+    flourishUntil = now + (HD.reducedMotion ? 0 : 520);
+    // the glass table tips back like a slide on a light box, then settles
+    flourish(
+      [
+        { transform: 'none' },
+        { transform: 'perspective(1800px) rotateX(11deg) scale(0.945)', offset: 0.38 },
+        { transform: 'perspective(1800px) rotateX(-2deg) scale(1.006)', offset: 0.74 },
+        { transform: 'none' },
+      ],
+      780
+    );
+    for (const p of lpanels) {
+      const r = uRect(layout[p.dataset.panel]);
+      const d = Math.hypot(r.x + r.w / 2 - fx.origin.x, r.y + r.h / 2 - fx.origin.y);
+      if (!HD.reducedMotion) flashPanel(p, d / 2.6);
+    }
+    btnLayout.setAttribute('aria-pressed', 'true');
+    btnLayout.querySelector('b').textContent = 'LOCK';
+    layBar.hidden = false;
+    HD.audio.chirp(220, 1320, 380, 'sine', 0.035);
+    setTimeout(() => HD.audio.beep(1760, 60, 'square', 0.015), 380);
+    bus.emit('layout:mode', { editing: true });
+    bus.emit('alert', { level: 'info', msg: 'LAYOUT MODE · GRID UNLOCKED · PANELS FREE', source: 'SYS', panel: 'shell', time: Date.now() });
+  }
+
+  function exitLayout(quiet) {
+    if (!editing) return;
+    if (gest) endGesture(null);
+    landGlides();
+    editing = false;
+    const now = performance.now();
+    root.classList.remove('is-layout');
+    undecorate();
+    layBar.hidden = true;
+    btnLayout.setAttribute('aria-pressed', 'false');
+    btnLayout.querySelector('b').textContent = 'EDIT';
+    const lr = layout && layout[lastMovedId] ? uRect(layout[lastMovedId]) : { x: G.w / 2, y: G.h / 2, w: 0, h: 0 };
+    fx.exitOrigin = { x: lr.x + lr.w / 2, y: lr.y + lr.h / 2 };
+    fx.exitAt = now;
+    if (layout && sameAsDefault(layout)) {
+      // the stock arrangement: hand the panels back to the CSS grid
+      const before = rectsOf();
+      layout = null;
+      applyLayout();
+      flipAll(before);
+    }
+    saveLayout();
+    bus.emit('layout:mode', { editing: false });
+    bus.emit('layout:change', { id: null });
+    if (quiet) {
+      layCv.hidden = true;
+      return;
+    }
+    if (!HD.reducedMotion) {
+      fx.rings.push({ x: fx.exitOrigin.x, y: fx.exitOrigin.y, t0: now, max: Math.hypot(G.w, G.h), dur: 900, c: 'phosphor' });
+      for (const p of lpanels) {
+        const r = p.getBoundingClientRect();
+        const d = Math.hypot(r.left + r.width / 2 - G.x - fx.exitOrigin.x, r.top + r.height / 2 - G.y - fx.exitOrigin.y);
+        flashPanel(p, d / 3.2, 'is-lock');
+      }
+      flourish([{ transform: 'none' }, { transform: 'perspective(1800px) rotateX(3deg) scale(0.99)', offset: 0.35 }, { transform: 'none' }], 520);
+    }
+    [784, 988, 1319].forEach((f, i) => setTimeout(() => HD.audio.beep(f, 110, 'sine', 0.03), i * 90));
+    pushTicker(`LAYOUT COMMITTED · ${IDS.length} PANELS DOCKED`);
+    bus.emit('alert', { level: 'info', msg: `LAYOUT COMMITTED · ${IDS.length} PANELS DOCKED`, source: 'SYS', panel: 'shell', time: Date.now() });
+  }
+
+  function resetLayout() {
+    if (!editing) return;
+    if (gest) endGesture(null);
+    landGlides();
+    const before = rectsOf();
+    layout = cloneDefault();
+    applyLayout();
+    geo();
+    const c = { x: G.w / 2, y: G.h / 2 };
+    const order = IDS.map((id) => {
+      const r = uRect(layout[id]);
+      return Math.hypot(r.x + r.w / 2 - c.x, r.y + r.h / 2 - c.y);
+    });
+    flipAll(before, (p, i) => order[i] / 3.4);
+    const now = performance.now();
+    if (!HD.reducedMotion) {
+      lpanels.forEach((p, i) => remat(p, order[i] / 3.4 + 380));
+      fx.rings.push({ x: c.x, y: c.y, t0: now, max: Math.hypot(G.w, G.h) * 0.6, dur: 800, c: 'ice' });
+    }
+    for (const id of IDS) fx.cells.push({ ...layout[id], t0: now + 300 });
+    HD.audio.chirp(1400, 180, 260, 'sawtooth', 0.02);
+    setTimeout(() => HD.audio.chirp(180, 1100, 320, 'sine', 0.03), 280);
+    layoutChanged(null);
+    bus.emit('alert', { level: 'info', msg: 'LAYOUT RESET · STOCK GRID RESTORED', source: 'SYS', panel: 'shell', time: Date.now() });
+  }
+
+  function layoutKey(e, k) {
+    if (k === 'l') {
+      if (!canLayout()) return false;
+      editing ? exitLayout() : enterLayout(px > 0 ? gridPoint(px, py) : null);
+      return true;
+    }
+    if (!editing) return false;
+    if (k === 'escape') {
+      // an overlay on top (zero hour, the protocol) takes Escape first
+      if (!takeover.hidden || !protocol.hidden) return false;
+      exitLayout();
+      return true;
+    }
+    const dir = { arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] }[k];
+    if (!dir) return false;
+    e.preventDefault();
+    if (gest) return true;
+    const f = document.activeElement && document.activeElement.closest && document.activeElement.closest('.panel[data-panel]');
+    const id = (f && byId[f.dataset.panel] && f.dataset.panel) || lastMovedId;
+    geo();
+    if (e.shiftKey) nudge(id, 0, 0, dir[0], dir[1]);
+    else nudge(id, dir[0], dir[1], 0, 0);
+    return true;
+  }
+
+  btnLayout.addEventListener('click', () => (editing ? exitLayout() : enterLayout()));
+  $('#lay-reset').addEventListener('click', resetLayout);
+  $('#lay-lock').addEventListener('click', () => exitLayout());
+  bus.on('ui:layout', () => (editing ? exitLayout() : enterLayout()));
+  const onWide = () => {
+    btnLayout.hidden = !canLayout();
+    if (!canLayout()) exitLayout(true);
+  };
+  if (wideMq.addEventListener) wideMq.addEventListener('change', onWide);
+  else if (wideMq.addListener) wideMq.addListener(onWide);
+  onWide();
+  addEventListener('resize', () => {
+    if (!editing) return;
+    if (gest) endGesture(null);
+    landGlides();
+    geo();
+    sizeLayFx();
+  });
+
+  // a saved arrangement comes back before the panels mount, so they boot at their final size
+  if (!HD.solo) {
+    layout = loadLayout();
+    if (layout) applyLayout();
+  }
+
+  /* ---- the light table: snap grid, landing zone, afterimages, rulers, shockwaves */
+
+  const lcol = (c, a) => HD.rgba(c, U.clamp(a, 0, 1).toFixed(3));
+  function brackets(g, x, y, w, h, len) {
+    g.beginPath();
+    g.moveTo(x, y + len);
+    g.lineTo(x, y);
+    g.lineTo(x + len, y);
+    g.moveTo(x + w - len, y);
+    g.lineTo(x + w, y);
+    g.lineTo(x + w, y + len);
+    g.moveTo(x + w, y + h - len);
+    g.lineTo(x + w, y + h);
+    g.lineTo(x + w - len, y + h);
+    g.moveTo(x + len, y + h);
+    g.lineTo(x, y + h);
+    g.lineTo(x, y + h - len);
+    g.stroke();
+  }
+  function label(g, text, x, y, color, bg = 'rgba(2,10,16,0.9)') {
+    g.font = '600 10px "JetBrains Mono", Consolas, monospace';
+    const w = g.measureText(text).width + 12;
+    g.fillStyle = bg;
+    g.fillRect(x, y - 15, w, 17);
+    g.strokeStyle = color;
+    g.lineWidth = 1;
+    g.strokeRect(x + 0.5, y - 14.5, w - 1, 16);
+    g.fillStyle = color;
+    g.fillText(text, x + 6, y - 3);
+    return w;
+  }
+  function litCells(g, s, now, base) {
+    const flash = Math.max(0, 1 - (now - fx.zoneAt) / 260);
+    g.fillStyle = lcol('holo', base + 0.2 * flash);
+    for (let i = 0; i < s.w; i++)
+      for (let j = 0; j < s.h; j++) g.fillRect((s.x + i) * G.px + 1, (s.y + j) * G.py + 1, G.px - G.gap - 2, G.py - G.gap - 2);
+  }
+  function zoneOutline(g, r, now, text, warn) {
+    g.save();
+    g.setLineDash([7, 5]);
+    g.lineDashOffset = -now / 28;
+    g.strokeStyle = lcol('holo', 0.9);
+    g.lineWidth = 1.5;
+    g.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    g.restore();
+    g.save();
+    g.shadowColor = HD.color.holo;
+    g.shadowBlur = 10;
+    g.strokeStyle = HD.color.ice;
+    g.lineWidth = 2.5;
+    brackets(g, r.x - 3, r.y - 3, r.w + 6, r.h + 6, Math.min(18, r.w / 3, r.h / 3));
+    g.restore();
+    if (text) {
+      const ty = r.y > 20 ? r.y - 5 : r.y + 20;
+      const w = label(g, text, r.x, ty, HD.color.holo);
+      if (warn) label(g, warn, r.x + w + 4, ty, HD.color.amber, 'rgba(24,12,0,0.9)');
+    }
+  }
+  function ruler(g, x, y, len, horiz, pitch, units, text) {
+    g.strokeStyle = lcol('ice', 0.85);
+    g.fillStyle = lcol('ice', 0.85);
+    g.lineWidth = 1;
+    g.beginPath();
+    if (horiz) {
+      g.moveTo(x, y + 0.5);
+      g.lineTo(x + len, y + 0.5);
+    } else {
+      g.moveTo(x + 0.5, y);
+      g.lineTo(x + 0.5, y + len);
+    }
+    for (let i = 0; i <= units * 2; i++) {
+      const o = Math.min(len, (i / 2) * pitch);
+      const tl = i % 2 ? 3 : i === 0 || i === units * 2 ? 9 : 6;
+      if (horiz) {
+        g.moveTo(x + o + 0.5, y);
+        g.lineTo(x + o + 0.5, y - tl);
+      } else {
+        g.moveTo(x, y + o + 0.5);
+        g.lineTo(x - tl, y + o + 0.5);
+      }
+    }
+    g.stroke();
+    g.font = '500 8px "JetBrains Mono", Consolas, monospace';
+    const every = pitch < 34 ? 2 : 1;
+    for (let i = every; i < units; i += every) {
+      const o = i * pitch;
+      if (horiz) g.fillText(String(i), x + o - 2, y - 11);
+      else g.fillText(String(i), x - 20, y + o + 3);
+    }
+    g.save();
+    g.translate(horiz ? x + len / 2 : x, horiz ? y : y + len / 2);
+    if (!horiz) g.rotate(-Math.PI / 2);
+    g.font = '600 9px "JetBrains Mono", Consolas, monospace';
+    const w = g.measureText(text).width + 10;
+    g.fillStyle = 'rgba(2,10,16,0.92)';
+    g.fillRect(-w / 2, -6, w, 12);
+    g.fillStyle = HD.color.ice;
+    g.textAlign = 'center';
+    g.fillText(text, 0, 3);
+    g.restore();
+  }
+
+  function drawGridMarks(g, now) {
+    const hot = !!gest || [...anims.values()].some((a) => a.kind === 'glide');
+    const waveR = (now - fx.enterAt) * 2.6;
+    const outR = (now - fx.exitAt) * 3.2;
+    const pg = px > 0 ? { x: px - G.x, y: py - G.y } : { x: -1e4, y: -1e4 };
+    if (hot && editing) {
+      // faint guide rails on every snap line while something is in the air
+      g.strokeStyle = lcol('holo', 0.07);
+      g.lineWidth = 1;
+      g.beginPath();
+      for (let i = 0; i <= COLS; i++) {
+        const x = Math.round(i * G.px - G.gap / 2) + 0.5;
+        g.moveTo(x, -G.gap / 2);
+        g.lineTo(x, G.h + G.gap / 2);
+      }
+      for (let j = 0; j <= ROWS; j++) {
+        const y = Math.round(j * G.py - G.gap / 2) + 0.5;
+        g.moveTo(-G.gap / 2, y);
+        g.lineTo(G.w + G.gap / 2, y);
+      }
+      g.stroke();
+    }
+    g.lineWidth = 1;
+    for (let i = 0; i <= COLS; i++) {
+      for (let j = 0; j <= ROWS; j++) {
+        const x = Math.round(i * G.px - G.gap / 2) + 0.5;
+        const y = Math.round(j * G.py - G.gap / 2) + 0.5;
+        let a;
+        let arm = 3.5;
+        if (editing) {
+          const d = Math.hypot(x - fx.origin.x, y - fx.origin.y);
+          a = U.clamp((waveR - d) / 90, 0, 1) * (hot ? 0.55 : 0.34);
+          const front = Math.abs(waveR - d);
+          if (front < 46) {
+            a += 0.75 * (1 - front / 46);
+            arm += 4 * (1 - front / 46);
+          }
+          const near = Math.max(0, 1 - Math.hypot(x - pg.x, y - pg.y) / 170);
+          a += 0.55 * near;
+          arm += 3 * near;
+        } else {
+          const d = Math.hypot(x - fx.exitOrigin.x, y - fx.exitOrigin.y);
+          a = 0.34 * U.clamp(1 - (outR - d) / 90, 0, 1);
+          const front = Math.abs(outR - d);
+          if (front < 46) a += 0.6 * (1 - front / 46);
+          if (a < 0.01) continue;
+        }
+        g.strokeStyle = lcol('holo', a);
+        g.beginPath();
+        g.moveTo(x - arm, y);
+        g.lineTo(x + arm, y);
+        g.moveTo(x, y - arm);
+        g.lineTo(x, y + arm);
+        g.stroke();
+      }
+    }
+  }
+
+  function drawZone(g, a, now, dt) {
+    if (!a.zone) return;
+    const t = uRect(a.zone);
+    const z = (fx.zone = fx.zone || { ...t });
+    const k = 1 - Math.exp(-30 * dt);
+    z.x += (t.x - z.x) * k;
+    z.y += (t.y - z.y) * k;
+    z.w += (t.w - z.w) * k;
+    z.h += (t.h - z.h) * k;
+    litCells(g, a.zone, now, 0.06);
+    const n = grid.querySelectorAll('.panel.is-overlap').length;
+    zoneOutline(g, z, now, `X${U.pad(a.zone.x)} Y${U.pad(a.zone.y)} · ${a.zone.w}×${a.zone.h}`, n ? `OVERLAP ×${n}` : '');
+    // tether from the card to its landing slot
+    const cx = a.x + a.w / 2;
+    const cy = a.y + a.h / 2;
+    const zx = z.x + z.w / 2;
+    const zy = z.y + z.h / 2;
+    if (Math.hypot(cx - zx, cy - zy) > 8) {
+      g.save();
+      g.setLineDash([2, 5]);
+      g.lineDashOffset = now / 20;
+      g.strokeStyle = lcol('neon', 0.75);
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(cx, cy);
+      g.lineTo(zx, zy);
+      g.stroke();
+      g.restore();
+      g.fillStyle = HD.color.neon;
+      g.beginPath();
+      g.arc(zx, zy, 3 + Math.sin(now / 90), 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+
+  function drawResize(g, a, now) {
+    const s = uRect(a.snap);
+    litCells(g, a.snap, now, 0.05);
+    zoneOutline(g, s, now, '', '');
+    const c = a.cur;
+    // the live wireframe under the glove
+    g.strokeStyle = lcol('ice', 0.55);
+    g.lineWidth = 1;
+    g.strokeRect(c.x + 0.5, c.y + 0.5, c.w - 1, c.h - 1);
+    g.strokeStyle = lcol('holo', 0.14);
+    g.beginPath();
+    g.moveTo(c.x, c.y);
+    g.lineTo(c.x + c.w, c.y + c.h);
+    g.moveTo(c.x + c.w, c.y);
+    g.lineTo(c.x, c.y + c.h);
+    g.stroke();
+    // the edges being pulled glow
+    g.save();
+    g.shadowColor = HD.color.neon;
+    g.shadowBlur = 12;
+    g.strokeStyle = HD.color.neon;
+    g.lineWidth = 2;
+    g.beginPath();
+    const e = a.edge;
+    if (e.includes('n')) g.moveTo(c.x, c.y), g.lineTo(c.x + c.w, c.y);
+    if (e.includes('s')) g.moveTo(c.x, c.y + c.h), g.lineTo(c.x + c.w, c.y + c.h);
+    if (e.includes('w')) g.moveTo(c.x, c.y), g.lineTo(c.x, c.y + c.h);
+    if (e.includes('e')) g.moveTo(c.x + c.w, c.y), g.lineTo(c.x + c.w, c.y + c.h);
+    g.stroke();
+    g.restore();
+    // glove node at the fingertip
+    const nr = 6 + 2 * Math.sin(now / 110);
+    g.strokeStyle = HD.color.ice;
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.arc(a.gx, a.gy, nr, 0, Math.PI * 2);
+    g.stroke();
+    g.strokeStyle = lcol('holo', 0.5);
+    g.beginPath();
+    g.arc(a.gx, a.gy, nr + 7 + ((now / 12) % 14), 0, Math.PI * 2);
+    g.stroke();
+    // CAD rulers along the top and left of the snapped frame
+    const topY = s.y > 30 ? s.y - 10 : s.y + 22;
+    const leftX = s.x > 34 ? s.x - 10 : s.x + 30;
+    ruler(g, s.x, topY, s.w, true, G.px, a.snap.w, `${Math.round(s.w)} PX`);
+    ruler(g, leftX, s.y, s.h, false, G.py, a.snap.h, `${Math.round(s.h)} PX`);
+    // the big readout
+    const fs = Math.round(U.clamp(Math.min(s.w * 0.13, s.h * 0.26), 14, 46));
+    g.save();
+    g.textAlign = 'center';
+    g.shadowColor = HD.color.holo;
+    g.shadowBlur = 16;
+    g.fillStyle = HD.color.ice;
+    g.font = `400 ${fs}px Michroma, "Arial Black", sans-serif`;
+    g.fillText(`${a.snap.w} × ${a.snap.h}`, s.x + s.w / 2, s.y + s.h / 2 + fs * 0.2);
+    g.shadowBlur = 0;
+    g.font = '600 10px "JetBrains Mono", Consolas, monospace';
+    g.fillStyle = a.atMin ? HD.color.amber : HD.color.holo;
+    g.fillText(`${Math.round(s.w)} × ${Math.round(s.h)} PX${a.atMin ? ' · MIN' : ''}`, s.x + s.w / 2, s.y + s.h / 2 + fs * 0.2 + 18);
+    g.restore();
+  }
+
+  function drawTransients(g, now, dt) {
+    for (let i = fx.ghosts.length - 1; i >= 0; i--) {
+      const q = fx.ghosts[i];
+      const age = (now - q.t) / 380;
+      if (age >= 1) {
+        fx.ghosts.splice(i, 1);
+        continue;
+      }
+      const al = 0.5 * (1 - age);
+      g.save();
+      g.translate(q.x + q.ox, q.y + q.oy);
+      g.rotate((q.rz * Math.PI) / 180);
+      g.translate(-q.ox, -q.oy);
+      g.fillStyle = lcol('holo', al * 0.08);
+      g.fillRect(0, 0, q.w, q.h);
+      g.strokeStyle = lcol('neon', al * 0.5);
+      g.lineWidth = 1;
+      g.strokeRect(3.5, 0.5, q.w - 1, q.h - 1);
+      g.strokeStyle = lcol('holo', al);
+      g.strokeRect(0.5, 0.5, q.w - 1, q.h - 1);
+      g.restore();
+    }
+    for (let i = fx.cells.length - 1; i >= 0; i--) {
+      const c = fx.cells[i];
+      const cx = c.x + c.w / 2;
+      const cy = c.y + c.h / 2;
+      let live = false;
+      for (let x = 0; x < c.w; x++) {
+        for (let y = 0; y < c.h; y++) {
+          const t = (now - c.t0 - Math.hypot(c.x + x + 0.5 - cx, c.y + y + 0.5 - cy) * 45) / 520;
+          if (t >= 1) continue;
+          live = true;
+          if (t < 0) continue;
+          g.fillStyle = lcol('holo', 0.34 * (1 - t));
+          g.fillRect((c.x + x) * G.px + 1, (c.y + y) * G.py + 1, G.px - G.gap - 2, G.py - G.gap - 2);
+        }
+      }
+      if (!live) fx.cells.splice(i, 1);
+    }
+    for (let i = fx.pulses.length - 1; i >= 0; i--) {
+      const q = fx.pulses[i];
+      const t = (now - q.t0) / 620;
+      if (t >= 1) {
+        fx.pulses.splice(i, 1);
+        continue;
+      }
+      const grow = 30 * U.ease.outCubic(t);
+      g.strokeStyle = lcol('ice', 0.75 * (1 - t));
+      g.lineWidth = 2 * (1 - t) + 0.5;
+      g.strokeRect(q.r.x - grow, q.r.y - grow, q.r.w + grow * 2, q.r.h + grow * 2);
+    }
+    for (let i = fx.rings.length - 1; i >= 0; i--) {
+      const q = fx.rings[i];
+      const t = (now - q.t0) / (q.dur || 700);
+      if (t < 0) continue;
+      if (t >= 1) {
+        fx.rings.splice(i, 1);
+        continue;
+      }
+      g.strokeStyle = lcol(q.c || 'holo', 0.8 * (1 - t));
+      g.lineWidth = 3 * (1 - t) + 0.5;
+      g.beginPath();
+      g.arc(q.x, q.y, Math.max(1, q.max * U.ease.outCubic(t)), 0, Math.PI * 2);
+      g.stroke();
+    }
+    for (let i = fx.sparks.length - 1; i >= 0; i--) {
+      const q = fx.sparks[i];
+      q.t += dt;
+      if (q.t >= q.life) {
+        fx.sparks.splice(i, 1);
+        continue;
+      }
+      q.vx *= 0.94;
+      q.vy *= 0.94;
+      q.x += q.vx * dt;
+      q.y += q.vy * dt;
+      g.fillStyle = lcol(q.c, 1 - q.t / q.life);
+      g.fillRect(q.x - q.s / 2, q.y - q.s / 2, q.s, q.s);
+    }
+  }
+
+  HD.onFrame((now, dt) => {
+    for (const [p, a] of anims) stepAnim(p, a, now, dt);
+    if (layCv.hidden) return;
+    const busy = fx.rings.length || fx.pulses.length || fx.cells.length || fx.sparks.length || fx.ghosts.length;
+    if (!editing && !busy && now - fx.exitAt > 900) {
+      layCv.hidden = true;
+      return;
+    }
+    const g = lctx;
+    const dpr = layCv.__dpr || 1;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, layCv.width, layCv.height);
+    g.setTransform(dpr, 0, 0, dpr, LAY_PAD * dpr, LAY_PAD * dpr);
+    drawGridMarks(g, now);
+    drawTransients(g, now, dt);
+    let flying = null;
+    for (const a of anims.values()) if (a.kind === 'drag' || a.kind === 'glide') flying = a;
+    if (flying) drawZone(g, flying, now, dt);
+    if (gest && gest.type === 'resize') drawResize(g, gest, now);
+  });
+
+  HD.layout = {
+    enter: enterLayout,
+    exit: exitLayout,
+    reset: resetLayout,
+    get editing() {
+      return editing;
+    },
+    get: () => (layout ? JSON.parse(JSON.stringify(layout)) : null),
+    defaults: () => {
+      const d = cloneDefault();
+      return d;
+    },
+    min: minOf,
+  };
 
   /* ------------------------------------------------------- intrusion banner */
 
@@ -363,6 +1568,7 @@
       bus.emit('ui:fedhead', { source: 'konami' });
       return;
     }
+    if (layoutKey(e, k)) return;
     if (k === 'escape' && HD.fedhead && HD.fedhead.dismiss()) return;
     if (k === 'e') bus.emit('ui:enhance', { source: 'key' });
     else if (k === 't') bus.emit('ui:trace', { source: 'key' });
@@ -395,6 +1601,9 @@
   const tkHandler = $('#takeover-handler');
   const tkQuote = $('#takeover-quote');
   for (const img of document.querySelectorAll('img[data-fh]')) if (FH) img.src = FH;
+  // the uplink call comes in on a different face: the handler's 1997 head scan got a Hollywood recast
+  const BRAD = (HD.assets && HD.assets.bradhead) || '';
+  if (FH && BRAD) for (const img of uplink.querySelectorAll('img[data-fh]')) img.src = BRAD;
   const vu = $('#uplink-vu');
   for (let i = 0; i < 18; i++) {
     const bar = U.el('i');
@@ -429,9 +1638,13 @@
       uplink.style.left = uplink.style.top = '';
       return;
     }
+    // hug the map's lower-left corner, but never leave the grid (a rearranged map can sit anywhere)
     const r = mapEl.getBoundingClientRect();
-    uplink.style.left = `${Math.round(r.left + 26)}px`;
-    uplink.style.top = `${Math.round(r.bottom - uplink.offsetHeight - 34)}px`;
+    const gr = grid.getBoundingClientRect();
+    const uw = uplink.offsetWidth;
+    const uh = uplink.offsetHeight;
+    uplink.style.left = `${Math.round(U.clamp(r.left + 26, gr.left, gr.right - uw))}px`;
+    uplink.style.top = `${Math.round(U.clamp(r.bottom - uh - 34, gr.top, gr.bottom - uh))}px`;
     uplink.style.right = 'auto';
     uplink.style.bottom = 'auto';
   }
@@ -536,6 +1749,8 @@
   });
   $('#uplink-x').addEventListener('click', () => closeUplink());
   addEventListener('resize', () => !uplink.hidden && placeUplink());
+  bus.on('layout:change', () => !uplink.hidden && placeUplink());
+  bus.on('layout:settled', (d) => d && d.id === 'map' && !uplink.hidden && placeUplink());
 
   // story beats
   bus.on('boot', () => setTimeout(() => countersign(`${S.op} desk, this is Fed. ${S.target.codename} is mobile in ${W.city}. Don't blink.`), 5200));
@@ -806,7 +2021,7 @@
   }
 
   function reflectOk() {
-    return refSprite && !refLive && takeover.hidden && protocol.hidden && bouncer.hidden && !protoTimer && !M.zeroAt && !document.hidden;
+    return refSprite && !refLive && !editing && takeover.hidden && protocol.hidden && bouncer.hidden && !protoTimer && !M.zeroAt && !document.hidden;
   }
   function startReflection(now) {
     refLive = true;

@@ -174,6 +174,7 @@
     for (const k of order) rows[k].text = TEXT[k];
     if (T.plateRevealed) rows.plate.text = T.plate;
     boot(false);
+    later(fit, 1500); // re-fit once every value has typed in
 
     /* ------------------------------------------------------------ live state */
 
@@ -344,6 +345,7 @@
       clearBadges();
       redactPlate();
       boot(true);
+      later(fit, 800);
     });
     ctx.on('intrusion', () => {
       glitchUntil = performance.now() + (RM ? 400 : 1000);
@@ -361,13 +363,18 @@
         );
       }
     });
-    ctx.on('fonts:ready', () => renderPhoto());
+    ctx.on('fonts:ready', () => {
+      fit();
+      renderPhoto();
+    });
 
     /* ------------------------------------------------------------ the photo */
 
     const pc = ctx.canvas({ parent: photo, dprMax: 2, className: 'dos-canvas' });
     const pg = pc.ctx;
     let base = null;
+    let lo = null;
+    let loCtx = null;
     let grainPat = null;
     let pw = 0;
     let ph = 0;
@@ -519,10 +526,14 @@
       // scene at reduced resolution, upscaled without smoothing: digital-zoom blockiness
       const lw = Math.max(28, Math.round(pw / 1.7));
       const lh = Math.max(34, Math.round((lw * ph) / pw));
-      const lo = document.createElement('canvas');
+      // one reusable CPU-side canvas: the grain pass reads it back (no GPU readback per resize)
+      if (!lo) {
+        lo = document.createElement('canvas');
+        loCtx = lo.getContext('2d', { willReadFrequently: true });
+      }
       lo.width = lw;
       lo.height = lh;
-      const s = lo.getContext('2d');
+      const s = loCtx;
       drawScene(s, lw, lh);
       const img = s.getImageData(0, 0, lw, lh);
       const d = img.data;
@@ -605,64 +616,178 @@
         g.fillRect(0, by, pw, 10);
       }
       const tiny = pw < 70;
+      const pk = U.clamp(pw / 180, 1, 1.8); // overlay scale on big photos
       // target bracket on the head
-      const breathe = RM ? 0 : Math.sin(now / 420) * 1.2;
+      const breathe = RM ? 0 : Math.sin(now / 420) * 1.2 * pk;
       const bx = pw * 0.24 - breathe;
       const by = ph * 0.1 - breathe;
       const bw = pw * 0.48 + breathe * 2;
       const bh = ph * 0.44 + breathe * 2;
       g.strokeStyle = ctx.color.threat;
-      g.lineWidth = tiny ? 1 : 1.3;
-      bracket(g, Math.round(bx) + 0.5, Math.round(by) + 0.5, Math.round(bw), Math.round(bh), tiny ? 4 : 7);
+      g.lineWidth = tiny ? 1 : 1.3 * pk;
+      bracket(g, Math.round(bx) + 0.5, Math.round(by) + 0.5, Math.round(bw), Math.round(bh), (tiny ? 4 : 7) * pk);
       g.lineWidth = 1;
       // side ticks on the bracket
       g.strokeStyle = ctx.rgba('threat', 0.6);
       const my = Math.round(by + bh / 2) + 0.5;
       g.beginPath();
-      g.moveTo(Math.round(bx) - 3, my);
-      g.lineTo(Math.round(bx) + 2, my);
-      g.moveTo(Math.round(bx + bw) - 2, my);
-      g.lineTo(Math.round(bx + bw) + 3, my);
+      g.moveTo(Math.round(bx) - 3 * pk, my);
+      g.lineTo(Math.round(bx) + 2 * pk, my);
+      g.moveTo(Math.round(bx + bw) - 2 * pk, my);
+      g.lineTo(Math.round(bx + bw) + 3 * pk, my);
       g.stroke();
       if (tiny) return;
-      g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+      const fz = Math.round(9 * pk);
+      const cw = 5.4 * pk; // JetBrains Mono advance at this size
+      g.font = `500 ${fz}px "JetBrains Mono", Consolas, monospace`;
       g.textBaseline = 'middle';
-      // target tag above the bracket
+      // target tag under the bracket
       const tt = 'TGT-01';
-      const tx = Math.round(bx + bw) - (tt.length * 5.4 + 5);
-      const ty = Math.round(by + bh) + 3;
+      const tagW = tt.length * cw + 5 * pk;
+      const tx = Math.round(bx + bw) - tagW;
+      const ty = Math.round(by + bh) + 3 * pk;
       g.fillStyle = 'rgba(40,0,8,0.82)';
-      g.fillRect(tx, ty, tt.length * 5.4 + 5, 10);
+      g.fillRect(tx, ty, tagW, 10 * pk);
       g.fillStyle = '#ff8a98';
-      g.fillText(tt, tx + 3, ty + 5.5);
+      g.fillText(tt, tx + 3 * pk, ty + 5.5 * pk);
       // REC + cam id
       const rec = RM || ((now / 600) | 0) % 2 === 0;
       if (rec) {
         g.fillStyle = ctx.color.threat;
-        g.fillRect(4, 5, 5, 5);
+        g.fillRect(4 * pk, 5 * pk, 5 * pk, 5 * pk);
       }
       g.fillStyle = 'rgba(223,248,255,0.85)';
-      g.fillText('REC', 12, 8);
+      g.fillText('REC', 12 * pk, 8 * pk);
       g.textAlign = 'right';
       g.fillStyle = 'rgba(169,220,232,0.7)';
-      if (pw >= 100) g.fillText('×4.0', pw - 4, 8);
+      if (pw >= 100) g.fillText('×4.0', pw - 4 * pk, 8 * pk);
       // caption strip
+      const cap = 12 * pk;
       g.fillStyle = 'rgba(2,6,10,0.72)';
-      g.fillRect(0, ph - 12, pw, 12);
+      g.fillRect(0, ph - cap, pw, cap);
       g.fillStyle = 'rgba(223,248,255,0.9)';
       g.textAlign = 'left';
-      g.fillText('IMG 0091', 4, ph - 5.5);
+      g.fillText('IMG 0091', 4 * pk, ph - cap / 2 + 0.5);
       g.textAlign = 'right';
       g.fillStyle = 'rgba(169,220,232,0.75)';
-      if (pw >= 100) g.fillText(U.fmtClock(new Date(), HD.tz.offset), pw - 4, ph - 5.5);
+      if (pw >= 100) g.fillText(U.fmtClock(new Date(), HD.tz.offset), pw - 4 * pk, ph - cap / 2 + 0.5);
       g.textAlign = 'left';
     }
 
     /* ----------------------------------------------------------------- frame */
 
+    /* ---------------------------------------------------------------- layout */
+
+    // Arrangement per size: short strips go wide (photo | ID | rows in columns), narrow strips go
+    // tall (photo on top, labels over values), everything else keeps the classic card, whose
+    // container queries tune the density. --dk scales the type on big panels.
+    let mode = '';
+    let curDk = 1;
+    function arrange(w, h) {
+      const next = w >= 540 && w / h >= 2.2 ? 'wide' : w < 300 && h / w >= 1.8 ? 'tall' : 'std';
+      if (next !== mode) {
+        root.classList.toggle('is-wide', next === 'wide');
+        root.classList.toggle('is-tall', next === 'tall');
+        mode = next;
+      }
+      const dk = next === 'wide' ? U.clamp(h / 230, 1, 1.5) : next === 'tall' ? U.clamp(w / 210, 1, 1.2) : U.clamp(Math.min(w / 430, h / 400), 1, 1.8);
+      curDk = dk;
+      root.style.setProperty('--dk', dk.toFixed(3));
+      if (next === 'wide') {
+        // the photo spans the body under the file strip at roughly 5:6
+        const ph = Math.max(40, h - 12 - 14 * dk - 5);
+        root.style.setProperty('--ph-w', Math.round(ph * 0.83) + 'px');
+        root.style.setProperty('--id-w', Math.round(U.clamp(w * 0.2, 160, 320 * dk)) + 'px');
+      } else if (next === 'tall') {
+        root.style.setProperty('--ph-w', Math.round(Math.min(w - 12, h * 0.36 * 0.83)) + 'px');
+      }
+    }
+
+    // Fold away what does not fit, least important first, so nothing is sliced by an edge.
+    // Layout reads: resize / font load / after the boot type-in only.
+    const DROP_ROWS = ['bounty', 'implants', 'assoc', 'charges', 'speed'];
+    const DROP_ID = ['bio', 'aliases', 'name'];
+    const DROP_LAST = ['vehicle', 'plate'];
+    const shown = (n) => n.offsetParent !== null;
+    // A row counts as cut when the card's clip edge would bite into its text. Rows may bleed into
+    // the card's bottom padding and lose their own padding + dashed rule (the classic 1080p card
+    // does exactly that); the plate tag's frame has to stay whole.
+    const LIST_KEYS = ['seen', 'vehicle', 'plate', 'speed', 'assoc', 'implants', 'bounty', 'charges'];
+    const over = (n) => (n === list ? overList() : n.scrollHeight > n.clientHeight + 2);
+    function overList() {
+      const edge = root.getBoundingClientRect().bottom + 0.5;
+      for (const k of LIST_KEYS) {
+        const r = rows[k];
+        if (r.r.offsetParent === null) continue;
+        if (r.vl.getBoundingClientRect().bottom - (k === 'plate' ? 0 : 2 * curDk) > edge) return true;
+      }
+      return false;
+    }
+    // (the root's own scroll size is useless here: the sweep band is transformed past its edges)
+    const overMain = () => main.getBoundingClientRect().bottom > root.getBoundingClientRect().bottom - 2;
+    // wide strips: rows run down columns; use as many columns as it takes to fill the height
+    // (instead of one sparse line of many columns), capped by a readable column width
+    function flowWide() {
+      let n = 0;
+      for (const c of list.children) if (shown(c)) n++;
+      n = Math.max(1, n);
+      list.style.setProperty('--rc', '1');
+      list.style.setProperty('--rr', String(n));
+      const maxC = Math.max(1, Math.floor(list.clientWidth / (210 * curDk)));
+      let c = U.clamp(Math.ceil(list.scrollHeight / Math.max(1, list.clientHeight)), 1, maxC);
+      if (list.clientWidth >= 900 * curDk) c = Math.max(c, Math.min(maxC, 2)); // very wide: spread out
+      const apply = () => {
+        list.style.setProperty('--rc', String(c));
+        list.style.setProperty('--rr', String(Math.ceil(n / c)));
+      };
+      apply();
+      while (over(list) && c < maxC) {
+        c++;
+        apply();
+      }
+    }
+
+    function fit() {
+      for (const k of order) rows[k].r.classList.remove('is-cut');
+      pair.classList.remove('is-cut');
+      root.classList.remove('is-tight');
+      const cut = (keys, box) => {
+        for (const k of keys) {
+          if (!over(box)) return;
+          const n = rows[k].r;
+          if (shown(n)) n.classList.add('is-cut');
+        }
+      };
+      if (mode === 'wide') {
+        cut(DROP_ID, idCol);
+        flowWide();
+        for (const k of DROP_ROWS.concat(DROP_LAST)) {
+          if (!over(list)) break;
+          const n = rows[k].r;
+          if (!shown(n)) continue;
+          n.classList.add('is-cut');
+          flowWide();
+        }
+        return;
+      }
+      // stacked: the rows soak up what the card leaves; the ID extras go before the key rows
+      cut(DROP_ROWS, list);
+      for (const k of DROP_ID) {
+        if (!over(list) && !overMain()) break;
+        const n = rows[k].r;
+        if (shown(n)) n.classList.add('is-cut');
+      }
+      cut(DROP_LAST, list);
+      // last resort on tiny cards: LAST SEEN keeps only its street, then the threat line goes
+      if (over(list)) root.classList.add('is-tight');
+      if (over(list) || overMain()) pair.classList.add('is-cut');
+    }
+
     return {
       fps: 12,
-      resize() {
+      resize(w, h) {
+        arrange(w, h);
+        fit();
         renderPhoto();
       },
       tick(now, dt) {

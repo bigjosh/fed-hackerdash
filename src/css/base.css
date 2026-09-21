@@ -1004,3 +1004,273 @@ html.is-still .fh-face img.fh-ghost-r,
 html.is-still .fh-face img.fh-ghost-b,
 html.is-still .uplink-scan,
 html.is-still .protocol-holo .ring { animation: none !important; }
+
+/* ============================================================ layout mode
+   Panels leave the CSS grid for a 24x12 snap grid (--lx/--ly/--lw/--lh, in cells) the first time the
+   operator rearranges them. Only the fixed desktop layout is editable; smaller screens keep their
+   stacks. Drag, throw, resize and dock choreography lives in shell.js; these are the costumes. */
+
+.grid { position: relative; }
+@media (min-width: 1280px) and (min-height: 700px) {
+  html.has-custom-layout .grid { display: block; }
+  html.has-custom-layout .grid > .panel {
+    position: absolute;
+    left: calc(var(--lx) * (100% + var(--gap)) / 24);
+    top: calc(var(--ly) * (100% + var(--gap)) / 12);
+    width: calc(var(--lw) * (100% + var(--gap)) / 24 - var(--gap));
+    height: calc(var(--lh) * (100% + var(--gap)) / 12 - var(--gap));
+    z-index: var(--lz, 1);
+  }
+}
+@media (max-width: 1279px), (max-height: 699px) {
+  #btn-layout { display: none; }
+}
+/* the layout button costs the chips some room on narrower desktops: keep the first chip whole */
+.chips { justify-content: safe center; }
+@media (min-width: 1280px) and (max-width: 1499px) {
+  #btn-layout b, #chip-sat { display: none; }
+}
+@media (min-width: 1280px) and (max-width: 1399px) {
+  #chip-target { display: none; }
+}
+
+.lay-fx { position: absolute; left: -28px; top: -28px; z-index: 90; pointer-events: none; }
+.panel.is-lay-anim { transition: none !important; will-change: transform; }
+
+#btn-layout[aria-pressed="true"] { color: var(--bg); background: var(--holo); box-shadow: 0 0 16px rgba(95, 243, 255, 0.6); }
+#btn-layout[aria-pressed="true"] b { color: var(--bg); }
+
+html.is-layout .chips { display: none; }
+html.is-layout .grid { perspective: none; }
+html.is-layout .panel {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  outline: 1px dashed rgba(95, 243, 255, 0.3);
+  outline-offset: 3px;
+  transition: border-color 0.25s, box-shadow 0.25s, opacity 0.25s, outline-color 0.25s;
+}
+html.is-layout .panel:hover { outline-color: rgba(95, 243, 255, 0.75); }
+html.is-layout .panel:focus-visible { outline: 1px solid var(--ice); }
+html.is-layout .panel-bd,
+html.is-layout .panel-bd * { pointer-events: none !important; }
+html.is-layout .panel::before,
+html.is-layout .panel::after { transition: width 0.22s cubic-bezier(0.2, 0.8, 0.2, 1.5), height 0.22s cubic-bezier(0.2, 0.8, 0.2, 1.5), top 0.22s, left 0.22s, right 0.22s, bottom 0.22s; }
+html.is-layout .grid.is-dragging .panel:not(.is-grabbed),
+html.is-layout .grid.is-sizing .panel:not(.is-resizing) { opacity: 0.5; }
+
+/* lifted off the glass (phase strobes and flashes wait until it lands) */
+.panel.is-grabbed {
+  --edge-c: var(--edge-hi);
+  animation: none !important;
+  cursor: grabbing;
+  z-index: 100 !important;
+  opacity: 0.94;
+  outline-color: transparent !important;
+  box-shadow:
+    0 44px 90px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(95, 243, 255, 0.55),
+    0 0 46px rgba(95, 243, 255, 0.32),
+    inset 0 0 46px rgba(95, 243, 255, 0.12);
+}
+.panel.is-grabbed::before,
+.panel.is-grabbed::after,
+.panel.is-resizing::before,
+.panel.is-resizing::after { width: 28px; height: 28px; }
+.panel.is-grabbed::before, .panel.is-resizing::before { top: -9px; left: -9px; }
+.panel.is-grabbed::after, .panel.is-resizing::after { bottom: -9px; right: -9px; }
+.panel.is-grabbed .panel-code { animation: lay-code-flip 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; color: var(--ice); }
+.panel.is-grabbed .panel-hd { background: linear-gradient(90deg, rgba(95, 243, 255, 0.32), rgba(95, 243, 255, 0.06) 60%, transparent); }
+@keyframes lay-code-flip { from { transform: perspective(160px) rotateY(0deg); } to { transform: perspective(160px) rotateY(360deg); } }
+.panel.is-overlap { --edge-c: rgba(255, 182, 39, 0.85); opacity: 0.75 !important; }
+.panel.is-overlap .lay-tag { color: var(--amber); border-color: rgba(255, 182, 39, 0.8); }
+
+/* being measured: the content drops to a wireframe under a holo grid */
+.panel.is-resizing { --edge-c: var(--edge-hi); }
+.panel.is-resizing .panel-bd { opacity: 0.14; transition: opacity 0.2s; }
+.panel.is-resizing .lay-deco {
+  background:
+    repeating-linear-gradient(0deg, rgba(95, 243, 255, 0.09) 0 1px, transparent 1px 14px),
+    repeating-linear-gradient(90deg, rgba(95, 243, 255, 0.09) 0 1px, transparent 1px 14px);
+}
+
+/* edit chrome on each panel: glove nodes on every edge and corner, and a coordinates tag */
+.lay-deco { position: absolute; inset: 0; z-index: 35; pointer-events: none; }
+/* hit areas sit mostly inside their own panel so neighbours' nodes never fight over the 6px gap;
+   --hx/--hy place the visible node on the actual corner or edge */
+.lay-h { position: absolute; width: 16px; height: 16px; pointer-events: auto; touch-action: none; }
+.lay-h::before {
+  content: "";
+  position: absolute;
+  left: var(--hx, 50%);
+  top: var(--hy, 50%);
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border: 1px solid var(--holo);
+  border-radius: 50%;
+  background: rgba(2, 10, 16, 0.92);
+  box-shadow: 0 0 7px rgba(95, 243, 255, 0.85);
+  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1.6), background 0.15s;
+  animation: lay-node 2.4s ease-in-out infinite;
+}
+.lay-h:hover::before { transform: scale(1.8); background: var(--holo); animation: none; }
+@keyframes lay-node { 50% { box-shadow: 0 0 2px rgba(95, 243, 255, 0.4); } }
+.lay-h-nw { left: -5px; top: -5px; --hx: 5px; --hy: 5px; cursor: nwse-resize; }
+.lay-h-ne { right: -5px; top: -5px; --hx: 11px; --hy: 5px; cursor: nesw-resize; }
+.lay-h-sw { left: -5px; bottom: -5px; --hx: 5px; --hy: 11px; cursor: nesw-resize; }
+.lay-h-se { right: -5px; bottom: -5px; --hx: 11px; --hy: 11px; cursor: nwse-resize; }
+.lay-h-n, .lay-h-s { left: 16px; right: 16px; width: auto; height: 11px; cursor: ns-resize; }
+.lay-h-n { top: -4px; --hy: 4px; }
+.lay-h-s { bottom: -4px; --hy: 7px; }
+.lay-h-e, .lay-h-w { top: 16px; bottom: 16px; width: 11px; height: auto; cursor: ew-resize; }
+.lay-h-e { right: -4px; --hx: 7px; }
+.lay-h-w { left: -4px; --hx: 4px; }
+.lay-h-n::before, .lay-h-s::before { width: 22px; height: 3px; margin: -1.5px 0 0 -11px; border-radius: 2px; }
+.lay-h-e::before, .lay-h-w::before { width: 3px; height: 22px; margin: -11px 0 0 -1.5px; border-radius: 2px; }
+.lay-h-n:hover, .lay-h-s:hover { background: linear-gradient(90deg, transparent, rgba(95, 243, 255, 0.7), transparent) center / 100% 2px no-repeat; }
+.lay-h-e:hover, .lay-h-w:hover { background: linear-gradient(180deg, transparent, rgba(95, 243, 255, 0.7), transparent) center / 2px 100% no-repeat; }
+.lay-h-n:hover::before, .lay-h-s:hover::before { transform: scaleX(1.8); }
+.lay-h-e:hover::before, .lay-h-w:hover::before { transform: scaleY(1.8); }
+.lay-tag {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 6px;
+  font: 600 9px/1.3 var(--f-mono);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  color: var(--ice);
+  background: rgba(2, 10, 16, 0.9);
+  border: 1px solid var(--edge-hi);
+  box-shadow: 0 0 10px rgba(95, 243, 255, 0.25);
+  animation: lay-tag-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes lay-tag-in { from { opacity: 0; transform: translateY(6px); clip-path: inset(0 100% 0 0); } to { opacity: 1; transform: none; clip-path: inset(0 0 0 0); } }
+
+/* toolbar: takes the chips' place in the top bar while editing */
+.lay-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  animation: lay-bar-in 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes lay-bar-in { from { opacity: 0; transform: scaleX(0.08); filter: brightness(3); } 60% { opacity: 1; filter: brightness(1.5); } to { transform: none; filter: none; } }
+.lay-bar-tag {
+  flex: 0 0 auto;
+  padding: 5px 11px 5px 9px;
+  font: 400 9.5px/1 var(--f-display);
+  letter-spacing: 0.3em;
+  color: var(--bg);
+  background: var(--holo);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 7px) 100%, 0 100%);
+  box-shadow: 0 0 16px rgba(95, 243, 255, 0.6);
+  animation: blink 1.6s steps(2) infinite;
+}
+.lay-bar-hint {
+  min-width: 0;
+  font: 600 9.5px/1.2 var(--f-ui);
+  letter-spacing: 0.16em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lay-bar-hint i { font-style: normal; color: var(--holo); margin: 0 4px; }
+.lay-bar-btn {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 11px;
+  font: 600 10px/1 var(--f-ui);
+  letter-spacing: 0.2em;
+  color: var(--amber);
+  background: rgba(255, 182, 39, 0.06);
+  border: 1px solid rgba(255, 182, 39, 0.6);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lay-bar-btn:hover { background: rgba(255, 182, 39, 0.2); color: #fff3d6; }
+.lay-bar-btn.is-primary { color: var(--phosphor); background: rgba(61, 255, 127, 0.1); border-color: var(--phosphor); box-shadow: 0 0 12px rgba(61, 255, 127, 0.3); }
+.lay-bar-btn.is-primary:hover { background: rgba(61, 255, 127, 0.25); color: #e6fff0; }
+.lay-bar-btn kbd { margin: 0 0 0 6px; color: inherit; border-color: currentColor; }
+
+/* docking: a scan line rematerialises the panel, a stamp confirms, a flash ripples on enter/lock */
+.lay-remat { position: absolute; inset: 0; z-index: 36; pointer-events: none; overflow: hidden; }
+.lay-remat::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(95, 243, 255, 0.14) 0 1px, transparent 1px 4px),
+    rgba(2, 10, 16, 0.85);
+  animation: lay-veil 0.62s cubic-bezier(0.5, 0, 0.3, 1) var(--d, 0ms) both;
+}
+.lay-remat::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--ice);
+  box-shadow: 0 0 12px 3px rgba(95, 243, 255, 0.9), 0 -26px 40px rgba(95, 243, 255, 0.28);
+  animation: lay-scan 0.62s cubic-bezier(0.5, 0, 0.3, 1) var(--d, 0ms) both;
+}
+@keyframes lay-veil { from { clip-path: inset(0 0 0 0); } to { clip-path: inset(100% 0 0 0); } }
+@keyframes lay-scan { from { top: 0; opacity: 1; } 88% { opacity: 1; } to { top: 100%; opacity: 0; } }
+.lay-stamp {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 37;
+  padding: 6px 14px;
+  font: 400 11px/1 var(--f-display);
+  letter-spacing: 0.28em;
+  white-space: nowrap;
+  color: var(--phosphor);
+  border: 1px solid var(--phosphor);
+  background: rgba(1, 14, 6, 0.88);
+  box-shadow: 0 0 24px rgba(61, 255, 127, 0.4), inset 0 0 12px rgba(61, 255, 127, 0.15);
+  text-shadow: 0 0 8px rgba(61, 255, 127, 0.7);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: lay-stamp 1.25s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes lay-stamp {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(1.9); filter: blur(5px); letter-spacing: 0.7em; }
+  14% { opacity: 1; transform: translate(-50%, -50%) scale(0.95); filter: none; letter-spacing: 0.28em; }
+  22% { transform: translate(-50%, -50%) scale(1); }
+  72% { opacity: 1; transform: translate(-50%, -50%); }
+  100% { opacity: 0; transform: translate(-50%, -70%); }
+}
+.lay-flash {
+  position: absolute;
+  inset: -1px;
+  z-index: 36;
+  pointer-events: none;
+  border: 1px solid var(--ice);
+  background: radial-gradient(ellipse at center, rgba(95, 243, 255, 0.05), rgba(95, 243, 255, 0.2));
+  box-shadow: 0 0 30px rgba(95, 243, 255, 0.5), inset 0 0 30px rgba(95, 243, 255, 0.3);
+  animation: lay-flash 0.62s ease-out var(--d, 0ms) both;
+}
+.lay-flash.is-lock { border-color: var(--phosphor); background: radial-gradient(ellipse at center, rgba(61, 255, 127, 0.04), rgba(61, 255, 127, 0.18)); box-shadow: 0 0 30px rgba(61, 255, 127, 0.45), inset 0 0 30px rgba(61, 255, 127, 0.25); }
+@keyframes lay-flash { 0% { opacity: 0; } 16% { opacity: 1; } 100% { opacity: 0; } }
+
+/* the gesture reticle turns into a grab diamond on the light table */
+.reticle.is-grab .reticle-ring { transform: rotate(45deg) scale(0.85); border-radius: 3px; border-color: var(--ice); }
+.reticle.is-grabbing .reticle-ring { transform: rotate(45deg) scale(0.55); border-radius: 2px; border-color: var(--neon); box-shadow: 0 0 12px rgba(255, 42, 109, 0.8); }
+
+@media (prefers-reduced-motion: reduce) {
+  .lay-h::before, .lay-bar-tag, .lay-bar, .lay-tag, .panel.is-grabbed .panel-code { animation: none !important; }
+}
+html.is-still .lay-h::before,
+html.is-still .lay-bar-tag,
+html.is-still .lay-bar,
+html.is-still .lay-tag,
+html.is-still .panel.is-grabbed .panel-code { animation: none !important; }

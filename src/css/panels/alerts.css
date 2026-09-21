@@ -57,16 +57,19 @@
 [data-panel="alerts"] .al-h { overflow: hidden; }
 
 /* rows */
-[data-panel="alerts"] .al-list {
+[data-panel="alerts"] .al-listbox {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
   overflow: hidden;
   -webkit-mask-image: linear-gradient(#000 calc(100% - 12px), transparent);
   mask-image: linear-gradient(#000 calc(100% - 12px), transparent);
+}
+[data-panel="alerts"] .al-list {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 [data-panel="alerts"] .al-row {
   display: grid;
@@ -136,9 +139,43 @@
   [data-panel="alerts"] .al-row,
   [data-panel="alerts"] .al-head { --al-cols: 54px 30px minmax(0, 1fr); }
 }
+/* very narrow, one-line rows: minutes:seconds only, the message needs the room */
+@container al (max-width: 200px) {
+  [data-panel="alerts"] .al-root:not(.is-2l) .al-ms { display: none; }
+  [data-panel="alerts"] .al-root:not(.is-2l) :is(.al-row, .al-head) { --al-cols: 31px 30px minmax(0, 1fr); column-gap: 4px; }
+}
 @container al (min-height: 180px) {
   [data-panel="alerts"] .al-head { display: grid; }
 }
+
+/* narrow + tall (set from JS): two-line rows, time / severity / source over the full message */
+[data-panel="alerts"] .al-root.is-2l .al-head { display: none; }
+[data-panel="alerts"] .al-root.is-2l .al-row {
+  grid-template-columns: auto 30px minmax(0, 1fr);
+  grid-template-rows: 13px 15px;
+  grid-template-areas: "t sev src" "msg msg msg";
+  align-content: center;
+  height: 29px;
+}
+[data-panel="alerts"] .al-root.is-2l .al-t { grid-area: t; line-height: 13px; }
+[data-panel="alerts"] .al-root.is-2l .al-sev { grid-area: sev; }
+[data-panel="alerts"] .al-root.is-2l .al-src { grid-area: src; display: block; line-height: 13px; text-align: right; }
+[data-panel="alerts"] .al-root.is-2l .al-msg { grid-area: msg; line-height: 15px; }
+
+/* full-screen sized logs (set from JS): larger type, taller rows */
+[data-panel="alerts"] .al-root.is-big {
+  font: 500 15px/21px var(--f-mono);
+  --al-cols: 100px 40px 40px minmax(0, 1fr);
+}
+[data-panel="alerts"] .al-root.is-big .al-strip { flex-basis: 20px; gap: 8px; padding: 0 8px; }
+[data-panel="alerts"] .al-root.is-big .al-strip-lbl { font-size: 11px; }
+[data-panel="alerts"] .al-root.is-big .al-spark { height: 15px; }
+[data-panel="alerts"] .al-root.is-big .al-eps { font-size: 12px; min-width: 44px; }
+[data-panel="alerts"] .al-root.is-big .al-head { flex-basis: 18px; font-size: 11px; line-height: 18px; column-gap: 7px; padding: 0 8px; }
+[data-panel="alerts"] .al-root.is-big .al-row { height: 21px; column-gap: 7px; padding: 0 8px 0 6px; }
+[data-panel="alerts"] .al-root.is-big .al-t { font-size: 13px; line-height: 21px; }
+[data-panel="alerts"] .al-root.is-big .al-sev { height: 15px; font-size: 11px; line-height: 11px; }
+[data-panel="alerts"] .al-root.is-big .al-src { font-size: 12px; line-height: 21px; }
 
 /* intrusion glitch */
 [data-panel="alerts"] .al-root.is-glitch .al-list { animation: al-glitch 0.14s steps(2) 5; }

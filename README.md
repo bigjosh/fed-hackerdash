@@ -15,6 +15,9 @@ countdown to a grid wipe, while handler **Agent Fed** runs the show over a secur
 - **Other panels**: node mesh, proxy-trace globe, cipher break, core telemetry, voice
   intercept, radar, biometric scan, target dossier and event log.
 - **Handler calls**: Agent Fed checks in at story beats.
+- **LAYOUT mode**: press `L` and the glass tips back onto a light table. You can drag any panel
+  (or throw it), pull its edges to resize it on a 24x12 snap grid, and lock the result. Your
+  arrangement is saved in this browser. It works on screens 1280x700 and up.
 
 Some things are hidden. They're for people who know the phrase.
 
@@ -29,6 +32,7 @@ except the fonts.
 | `T` | restart the proxy trace |
 | `` ` `` or `/` | focus the terminal |
 | `I` | trigger an intrusion |
+| `L` | layout mode: drag and resize panels (arrows nudge, shift+arrows resize, `Esc`/`L` locks) |
 | `M` | toggle audio |
 | `F` | fullscreen |
 
@@ -40,6 +44,7 @@ reduces motion, and `?solo=map&w=640&h=420` shows one panel alone.
 ```bash
 python build.py            # index.html (inlined, served by GitHub Pages), dev.html (links src/), dist/fedlight.html
 python tools/shot.py       # real-time headless screenshot + console errors + fps (pip install playwright)
+python tools/layout_test.py # drives LAYOUT mode with real mouse drags, throws, resizes and keys
 python tools/paris_data.py # re-fetch and re-encode the Paris map data (cached in tools/.cache)
 ```
 
@@ -53,6 +58,13 @@ panel API and event catalog are in `CONTRACT.md`.
 Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available
 under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/).
 `src/js/data/paris.js` is a derived database of that data and is shared under the same licence.
+
+The head scan on the handler's uplink calls (`src/assets/bradhead.gif`) is made from three
+public-domain photos by Aubrey Gemignani (NASA) of the 2019 "Ad Astra" screening, via Wikimedia
+Commons:
+[1](https://commons.wikimedia.org/wiki/File:%22Ad_Astra%22_Screening_at_National_Geographic_NHQ201909160023_(cropped).jpg),
+[2](https://commons.wikimedia.org/wiki/File:%22Ad_Astra%22_Screening_at_National_Geographic_NHQ201909160018.jpg) and
+[3](https://commons.wikimedia.org/wiki/File:%22Ad_Astra%22_Screening_at_National_Geographic_NHQ201909160028.jpg).
 
 Everything else is fiction: NULLSEC, WRAITH, the KAIZEN MORRIGAN GT and the grid wipe are made
 up. The fonts are Michroma, Chakra Petch, JetBrains Mono and VT323 via Google Fonts.

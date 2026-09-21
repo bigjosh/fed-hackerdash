@@ -2072,11 +2072,6 @@
     yield 'g3';
     car.push(graded(u2, CAR_GRADE), full);
     yield 'g2';
-    const pb = S.plateBox;
-    const pw = Math.max(pb.w, 40);
-    const cx = pb.x + pb.w / 2;
-    const cy = pb.y + pb.h / 2;
-    const detailR = { x: Math.round(cx - 0.75 * pw), y: Math.round(cy - 0.8 * pw), w: Math.round(1.5 * pw), h: Math.round(2.1 * pw) };
     const r = HD.rng(seed ^ 0x0c4);
     const cells = plateCells(S.plate);
     let j = 0;
@@ -2084,13 +2079,14 @@
       c.conf = c.sep ? 100 : r.range(91.5, 99.7);
       c.order = c.sep ? -1 : j++;
     }
-    return { n, S, info, full, car, thumb: u6, light, bloom, detailR, cells, conf: r.range(96.4, 98.8), plate: null, vk: null };
+    return { n, S, info, full, car, thumb: u6, light, bloom, detailR: null, D: 0, cells, conf: r.range(96.4, 98.8), plate: null, vk: null, pl: null, dtok: null, dwant: null };
   }
 
-  // The plate neighbourhood re-painted at D× plus its own stage pyramid, for the second ENHANCE.
-  function* detailJob(cap, D) {
+  // The plate neighbourhood re-painted at D× plus its own stage pyramid, for the second ENHANCE. The
+  // region is sized for the panel shape that asked for it; a newer request (a resize) supersedes it.
+  function* detailJob(cap, want, tok) {
     const { S } = cap;
-    const dr = cap.detailR;
+    const { dr, D } = want;
     const d = mk(dr.w * D, dr.h * D, true);
     const flush = () => d.g.getImageData(0, 0, 1, 1);
     d.g.setTransform(D, 0, 0, D, -dr.x * D, -dr.y * D);
@@ -2122,6 +2118,9 @@
     const plate = [graded(q0, PLATE_GRADE[0]), graded(q1, PLATE_GRADE[1]), graded(q2, PLATE_GRADE[2])];
     yield 'd-g';
     plate.push(graded(q3, PLATE_GRADE[3]), top);
+    if (cap.dtok !== tok) return;
+    cap.detailR = dr;
+    cap.D = D;
     cap.plate = plate;
   }
 
@@ -2156,8 +2155,6 @@
   const WORD_D = 0.8; // the ENHANCE title card
   const CUT_D = 0.4; // glitch-cut between cameras
   const PLATE_Y = 0.36; // where the plate settles in the final frame (fraction of height)
-  const TOP_H = 34; // DOM header strip
-  const BOT_H = 22; // DOM status strip
   const UPSCALE = [1, 2, 4, 6, 8];
   const GLYPHS = 'ABCDEFGHJKLMNPQRSTVWXYZ0123456789';
   const STATE = { live: 'LIVE', acq: 'ACQUIRING', enh: 'ENHANCING', ocr: 'OCR', match: 'MATCH' };
@@ -2217,6 +2214,10 @@
     const view = ctx.canvas({ alpha: false, className: 'enh-view' });
     let W = ctx.width || 466;
     let H = ctx.height || 458;
+    // the header and status strips (DOM), scaled with the HUD on very large bodies
+    let hs = 1;
+    let TOP_H = 34;
+    let BOT_H = 22;
 
     /* ---- HUD (DOM: crisp text, ellipsis, container queries) */
     const fxEl = U.el('div', 'enh-fx');
@@ -2238,7 +2239,7 @@
         <div class="enh-pr"><span>ZOOM</span><b data-p="zm"></b></div>
       </div>
       <div class="enh-final" hidden>
-        <span class="enh-fl1">PLATE <b data-f="plate"></b> · CONF <b data-f="conf"></b> · MATCH: <em>WRAITH</em></span>
+        <span class="enh-fl1"><span class="enh-f-pl">PLATE <b data-f="plate"></b></span><i class="enh-f-sep"> · </i><span>CONF <b data-f="conf"></b></span><i class="enh-f-sep"> · </i><span>MATCH: <em>WRAITH</em></span></span>
         <span class="enh-fl2"></span>
       </div>
       <div class="enh-bot">
@@ -2325,10 +2326,10 @@
     let spr = null;
     function sprites() {
       const dpr = view.dpr;
-      const key = `${W}|${dpr}|${HD.fontsReady}`;
+      const key = `${W}|${H}|${hs}|${dpr}|${HD.fontsReady}`;
       if (spr && spr.key === key) return spr;
       const m = mk(1, 1).g;
-      let fs = Math.min(54, W * 0.12);
+      let fs = Math.min(54 * hs, W * 0.12, H * 0.28);
       const ls = () => `${(fs * 0.26).toFixed(1)}px`;
       m.font = `${fs}px Michroma, "Arial Black", sans-serif`;
       m.letterSpacing = ls();
@@ -2357,7 +2358,7 @@
         return c;
       };
       // rubber MATCH stamp: double frame, worn ink
-      const sf = U.clamp(W * 0.062, 15, 36);
+      const sf = U.clamp(Math.min(W * 0.062, H * 0.09), 15, 36 * hs);
       const sw = sf * 6.4;
       const sh = sf * 2.1;
       const st = mk(sw * dpr, sh * dpr);
@@ -2401,7 +2402,6 @@
     let capN = 0;
     let cur = null;
     let next = null;
-    const detailScale = (c) => U.clamp(Math.ceil(((0.86 * W) / c.S.plateBox.w) * view.dpr * 0.9), DETAIL, 9);
     function autoInfo() {
       const known = (v) => v && v !== '—';
       if (known(T.street) && known(T.district)) return { camId: `CAM-${U.pad(R.int(100, 9899), 4)}`, street: T.street, district: T.district };
@@ -2416,12 +2416,59 @@
       const a = autoInfo();
       return { camId: (d && d.camId) || a.camId, street: (d && d.street) || a.street, district: (d && d.district) || a.district };
     }
+    // the plate detail for this panel shape: the frame's whole view at the final read (plus the
+    // default neighbourhood), rendered at about the display scale
+    function wantDetail(c) {
+      const L = plateLayout(c);
+      const pb = c.S.plateBox;
+      const pw = Math.max(pb.w, 40);
+      const cx = pb.x + pb.w / 2;
+      const cy = pb.y + pb.h / 2;
+      const vx = cx + (W / 2 - L.px) / L.s2;
+      const vy = cy + (H / 2 - L.py) / L.s2;
+      const hw = (W / L.s2) * 0.52;
+      const hh = (H / L.s2) * 0.52;
+      const x0 = Math.floor(Math.min(cx - 0.75 * pw, vx - hw));
+      const y0 = Math.floor(Math.min(cy - 0.8 * pw, vy - hh));
+      const x1 = Math.ceil(Math.max(cx + 0.75 * pw, vx + hw));
+      const y1 = Math.ceil(Math.max(cy + 1.3 * pw, vy + hh));
+      const dr = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      let D = U.clamp(Math.ceil(L.s2 * 1.025 * view.dpr * 0.9), DETAIL, 9);
+      while (D > 4 && dr.w * dr.h * D * D > 4.5e6) D--; // cap the paint on huge strips
+      return { dr, D };
+    }
+    function* detailFor(c) {
+      const want = wantDetail(c);
+      const tok = (c.dtok = {});
+      c.dwant = want;
+      yield* detailJob(c, want, tok);
+    }
+    // (re)build a capture's plate detail; its old one is dropped so no beat reads a mismatched frame
+    function queueDetail(c) {
+      for (let i = jobs.length - 1; i >= 0; i--) if (jobs[i].detailOf === c) jobs.splice(i, 1);
+      c.plate = null;
+      c.detailR = null;
+      c.vk = null;
+      const job = detailFor(c);
+      job.detailOf = c;
+      jobs.unshift(job);
+      schedule();
+    }
+    // a capture whose detail (built or in flight) no longer covers what this panel shape needs
+    function staleDetail(c) {
+      const have = c.plate ? { dr: c.detailR, D: c.D } : c.dwant;
+      if (!have || !have.dr) return false;
+      const w = wantDetail(c);
+      const a = have.dr;
+      const b = w.dr;
+      return b.x < a.x - 1 || b.y < a.y - 1 || b.x + b.w > a.x + a.w + 1 || b.y + b.h > a.y + a.h + 1 || have.D < w.D - 1;
+    }
     function prepareNext() {
       const n = capN++;
       jobs.push(
         (function* () {
           const c = yield* captureJob(n, null);
-          yield* detailJob(c, detailScale(c));
+          yield* detailFor(c);
           next = c;
         })()
       );
@@ -2463,12 +2510,7 @@
     const firstDetail = () => {
       if (cap0Queued) return;
       cap0Queued = true;
-      jobs.unshift(
-        (function* () {
-          yield* detailJob(cap0, detailScale(cap0));
-        })()
-      );
-      schedule();
+      if (!cap0.dtok) queueDetail(cap0);
     };
     if (HD.fontsReady) firstDetail();
     else {
@@ -2572,20 +2614,88 @@
       v.cy = hh * 2 >= r.h ? r.y + r.h / 2 : U.clamp(v.cy, r.y + hh, r.y + r.h - hh);
       return v;
     }
+    // The final read, laid out for the panel shape: where the plate settles (centre, on-screen width)
+    // and where the OCR readout and the verdict go. 'stack' puts plate, readout and verdict in a
+    // column; short wide strips go 'side' by side (the verdict replaces the readout at MATCH); tiny
+    // bodies keep the plate alone ('solo') with its glyph boxes.
+    function plateLayout(c) {
+      if (c.pl && c.pl.W === W && c.pl.H === H && c.pl.hs === hs) return c.pl;
+      const pb = c.S.plateBox;
+      const a = pb.h / pb.w;
+      const n = c.cells.length;
+      const fk = Math.min(hs, 1.3);
+      const top = TOP_H + 6;
+      const bot = H - BOT_H - 6;
+      const finTop = H - (30 + (W <= 330 ? 24 : 38)) * hs - 4; // the verdict box sits at bottom: 30px
+      const pwMax = Math.min(0.86 * W, 560 + 0.25 * W);
+      let L = null;
+      // stacked, trimming the readout (confidence figures, then cell size) before giving up on it
+      const cw0 = Math.min(40 * hs, (W * 0.84) / n);
+      for (const [cw, fig] of [[cw0, true], [cw0, false], [Math.min(cw0, 28), false]]) {
+        const ch = Math.round(cw * 1.2);
+        const conf = fig && cw >= 25 * fk;
+        const below = 22 + ch + (conf ? 26 : 12) * fk;
+        const room = finTop - top - below;
+        const pw = Math.min(pwMax, room / a);
+        if (pw * a >= 20 && pw >= Math.min(pwMax, 0.45 * W)) {
+          const ph = pw * a;
+          const py = U.clamp(PLATE_Y * H, top + ph / 2, top + room - ph / 2);
+          L = { mode: 'stack', pw, px: W / 2, py, ro: { cw, ch, conf, yMax: finTop - ch - (conf ? 26 : 12) * fk } };
+          break;
+        }
+      }
+      if (!L && W >= 440) {
+        const avH = bot - top;
+        let conf = true;
+        let cw = Math.min(40 * hs, (avH - 16 - 26 - 6) / 1.2);
+        if (cw < 24) {
+          conf = false;
+          cw = Math.min(40 * hs, (avH - 16 - 12 - 6) / 1.2);
+        }
+        if (cw >= 15) {
+          const ch = Math.round(cw * 1.2);
+          const rw = n * cw + 16;
+          const gap = 30;
+          const pw = Math.min(pwMax, 0.9 * (W - 32 - rw - gap), (avH * 0.8) / a);
+          const x0 = (W - pw - gap - rw) / 2;
+          const cy = (top + bot) / 2;
+          const bh = 16 + ch + (conf ? 26 : 12);
+          // the verdict takes the readout's place when that leaves it room, else the whole right side
+          const fx0 = x0 + pw + 16;
+          const rx = x0 + pw + gap + rw / 2;
+          const half = Math.min(rx - fx0, W - 8 - rx);
+          const fin = half * 2 >= 360 * hs ? { x: rx, y: cy, w: half * 2 } : { x: (fx0 + W - 8) / 2, y: cy, w: W - 8 - fx0 };
+          L = { mode: 'side', pw, px: x0 + pw / 2, py: cy, ro: { cw, ch, conf, x: x0 + pw + gap + 8, y: Math.round(cy - bh / 2 + 16) }, fin };
+        }
+      }
+      if (!L) {
+        const room = finTop - top;
+        const pw = Math.max(40, Math.min(0.86 * W, room / a));
+        L = { mode: 'solo', pw, px: W / 2, py: top + Math.max(pw * a, room) / 2, ro: null };
+      }
+      L.W = W;
+      L.H = H;
+      L.hs = hs;
+      L.s2 = L.pw / pb.w;
+      c.pl = L;
+      return L;
+    }
     function keys(c) {
-      if (c.vk && c.vk.W === W && c.vk.H === H) return c.vk;
+      const dr = c.detailR || FULL_R;
+      if (c.vk && c.vk.W === W && c.vk.H === H && c.vk.hs === hs && c.vk.dr === dr) return c.vk;
       const cb = c.S.carBox;
       const pb = c.S.plateBox;
-      const dr = c.detailR;
+      const L = plateLayout(c);
       const s0 = Math.max(W / SRC_W, H / SRC_H);
       const v0 = fitIn({ cx: U.lerp(SRC_W / 2, cb.x + cb.w / 2, 0.3), cy: SRC_H / 2, s: s0 }, FULL_R);
-      const s1 = Math.max(s0 * 1.6, Math.min(W / (cb.w * 1.3), (H - TOP_H) / (cb.h * 1.4)));
+      const s2 = Math.max(L.s2, s0 * 1.3);
+      // the vehicle beat stays a real step in from LIVE and short of the plate
+      const s1 = Math.max(s0 * 1.15, Math.min(s2 / 1.3, Math.max(s0 * 1.6, Math.min(W / (cb.w * 1.3), (H - TOP_H) / (cb.h * 1.4)))));
       const v1 = fitIn({ cx: cb.x + cb.w / 2, cy: cb.y + cb.h * 0.55, s: s1 }, FULL_R);
       const v1b = { cx: v1.cx, cy: v1.cy, s: s1 * 1.04 };
-      const s2 = Math.max((0.86 * W) / pb.w, W / dr.w, H / dr.h, s1 * 1.5);
-      const v2 = fitIn({ cx: pb.x + pb.w / 2, cy: pb.y + pb.h / 2 + ((0.5 - PLATE_Y) * H) / s2, s: s2 }, dr);
+      const v2 = fitIn({ cx: pb.x + pb.w / 2 + (W / 2 - L.px) / s2, cy: pb.y + pb.h / 2 + (H / 2 - L.py) / s2, s: s2 }, dr);
       const v2b = { cx: v2.cx, cy: v2.cy, s: s2 * 1.025 };
-      c.vk = { W, H, v0, v1, v1b, v2, v2b };
+      c.vk = { W, H, hs, dr, v0, v1, v1b, v2, v2b };
       return c.vk;
     }
     const vv = { cx: 0, cy: 0, s: 1, x: 0, y: 0 };
@@ -2684,10 +2794,18 @@
     }
     // the "PASS n/4 · WxH" tag rides the sweep line; it takes the first slot that keeps clear of the
     // region read-out, the reconstruction block, the PiP and the status strip (or sits this frame out)
-    const pipRect = () => {
-      const pw = Math.round(U.clamp(W * 0.23, 68, 132));
+    // the source PiP (bottom right): sized to the panel, and left out where it would not fit under
+    // the header with its label
+    function pipGeom() {
+      let pw = Math.round(U.clamp(W * 0.23, 68, 132 * hs));
+      pw = Math.min(pw, Math.floor(((H - TOP_H - BOT_H - 44) * SRC_W) / SRC_H));
+      if (pw < 60) return null;
       const ph = Math.round((pw * SRC_H) / SRC_W);
-      return { x: W - pw - 10, y: H - BOT_H - ph - 36, w: pw, h: ph + 14 };
+      return { x: W - pw - 10, y: H - BOT_H - ph - 22, pw, ph };
+    }
+    const pipRect = () => {
+      const p = pipGeom();
+      return p && { x: p.x, y: p.y - 14, w: p.pw, h: p.ph + 14 };
     };
     function drawSweepLabel(g, si, pipOn) {
       if (si.f < 0) return;
@@ -2698,7 +2816,8 @@
       const lw = g.measureText(label).width;
       const busy = [];
       if (subBox) busy.push(subBox);
-      if (procOn) busy.push({ x: 0, y: 0, w: procW + 4, h: 44 + procH });
+      if (tagBox) busy.push(tagBox);
+      if (procOn) busy.push({ x: 0, y: 0, w: procBox.x + procBox.w + 4, h: procBox.y + procBox.h + 2 });
       const pip = pipOn ? pipRect() : null;
       if (pip) busy.push(pip);
       const clear = (x, y) => y - 10 > TOP_H && y + 3 < H - BOT_H && !busy.some((b) => hit({ x: x - 3, y: y - 10, w: lw + 6, h: 13 }, b));
@@ -2745,13 +2864,22 @@
       g.globalAlpha = 1;
     }
 
+    let tagY = 0; // baseline of the last region tag, so its coordinate line can keep clear
+    let tagBox = null; // this frame's region tag
+    let pipBox = null; // this frame's PiP footprint, when it is up
     function tag(g, x, y, text, bg, fg, right) {
       g.font = F_UI(9.5);
       g.letterSpacing = '1px';
       const w = g.measureText(text).width + 8;
       y = U.clamp(y, TOP_H + 14, H - BOT_H - 4);
-      if (procOn && x < procW && y - 14 < procH) x = Math.max(procW + 2, right - w);
+      if (procOn && x < procBox.x + procBox.w + 4 && y - 14 < procBox.y + procBox.h) {
+        x = Math.max(procBox.x + procBox.w + 6, right - w);
+        if (x > W - w - 4) y = Math.min(procBox.y + procBox.h + 16, H - BOT_H - 4);
+      }
+      if (pipBox && hit({ x, y: y - 13, w, h: 14 }, pipBox)) x = pipBox.x - w - 4;
       x = U.clamp(x, 4, W - w - 4);
+      tagY = y;
+      tagBox = { x, y: y - 13, w, h: 14 };
       g.fillStyle = bg;
       g.fillRect(x, y - 13, w, 14);
       g.fillStyle = fg;
@@ -2795,10 +2923,18 @@
         g.fillStyle = ctx.rgba('ice', 0.85);
         // clamp by the full line, so the typed-in text never runs off the right edge
         const sw = g.measureText(sub).width;
-        const sx = U.clamp(x, 4, Math.max(4, W - sw - 6));
-        const sy = Math.min(y + h + 12, H - BOT_H - 6);
-        g.fillText(sub.slice(0, n), sx, sy);
-        if (alpha > 0.05) subBox = { x: sx, y: sy - 9, w: sw, h: 12 };
+        let sx = U.clamp(x, 4, Math.max(4, W - sw - 6));
+        let sy = Math.min(y + h + 12, H - BOT_H - 6);
+        // pinned against the status strip with the tag: the line goes above the tag instead
+        if (Math.abs(sy - tagY) < 13) sy = tagY - 16 > TOP_H + 10 ? tagY - 16 : -1;
+        if (pipBox && hit({ x: sx, y: sy - 9, w: sw, h: 12 }, pipBox)) sx = Math.max(4, pipBox.x - sw - 6);
+        // it sits the frame out rather than run under the DOM readout block or the PiP
+        const sb = { x: sx, y: sy - 9, w: sw, h: 12 };
+        if ((procOn && hit(sb, procBox)) || (pipBox && hit(sb, pipBox))) sy = -1;
+        if (sy > 0) {
+          g.fillText(sub.slice(0, n), sx, sy);
+          if (alpha > 0.05) subBox = { x: sx, y: sy - 9, w: sw, h: 12 };
+        }
       }
       g.globalAlpha = 1;
     }
@@ -2886,11 +3022,9 @@
     }
 
     function drawPip(g, v, z, alpha) {
-      if (alpha <= 0) return;
-      const pw = Math.round(U.clamp(W * 0.23, 68, 132));
-      const ph = Math.round((pw * SRC_H) / SRC_W);
-      const x = W - pw - 10;
-      const y = H - BOT_H - ph - 22;
+      const pg = alpha > 0 && pipGeom();
+      if (!pg) return;
+      const { x, y, pw, ph } = pg;
       g.globalAlpha = alpha;
       g.imageSmoothingEnabled = true;
       g.fillStyle = '#000';
@@ -2955,47 +3089,58 @@
         brackets(g, px0, plateTop - 6, px1 - px0, plateBot - plateTop + 12, 14);
         g.lineWidth = 1;
       }
-      // readout row: every cell cycles glyphs until its lock, with a confidence meter
-      const n = c.cells.length;
-      const cw = Math.min(40, (W * 0.84) / n);
-      const ch = Math.round(cw * 1.2);
-      const x0 = Math.round(W / 2 - (n * cw) / 2);
-      const y0 = Math.round(Math.min(plateBot + 14, H - BOT_H - 70 - ch));
-      g.globalAlpha = a;
-      g.fillStyle = 'rgba(2,8,12,0.78)';
-      g.fillRect(x0 - 8, y0 - 16, n * cw + 16, ch + 42);
-      g.font = F_UI(9);
-      g.letterSpacing = '1px';
-      g.fillStyle = ctx.rgba('holo', 0.9);
-      g.fillText('OCR · SIV-FR · 7 GLYPHS', x0 - 2, y0 - 5);
-      g.textAlign = 'right';
-      g.fillStyle = ctx.rgba('text', 0.8);
-      g.fillText(`${(t - TL.ocr > 0 ? Math.min(99, ((t - TL.ocr) * 131) | 0) : 0) + 1} FR/S`, x0 + n * cw + 2, y0 - 5);
-      g.letterSpacing = '0px';
-      g.textAlign = 'center';
-      const fs = Math.round(ch * 0.66);
-      c.cells.forEach((cell, i) => {
-        const x = x0 + i * cw;
-        const lockAt = TL.lock0 + cell.order * TL.lockStep;
-        const lk = cell.sep || t >= lockAt;
-        g.strokeStyle = lk ? ctx.rgba('phosphor', cell.sep ? 0.25 : 0.7) : ctx.rgba('holo', 0.35);
-        g.strokeRect(x + 2.5, y0 + 0.5, cw - 5, ch);
-        let chr = cell.ch;
-        if (!lk) chr = GLYPHS[(hash(i + c.n * 13, (t * 16) | 0) * GLYPHS.length) | 0];
-        g.font = F_MONO(fs, 700);
-        g.fillStyle = lk ? (cell.sep ? ctx.rgba('text', 0.6) : C.ice) : C.amber;
-        g.fillText(chr, x + cw / 2, y0 + ch / 2 + fs * 0.36);
-        if (cell.sep) return;
-        const conf = lk ? cell.conf : 40 + 50 * hash(i, (t * 12) | 0);
-        const bw = cw - 8;
-        g.fillStyle = ctx.rgba('holo', 0.15);
-        g.fillRect(x + 4, y0 + ch + 4, bw, 3);
-        g.fillStyle = lk ? C.phosphor : C.amber;
-        g.fillRect(x + 4, y0 + ch + 4, (bw * conf) / 100, 3);
-        g.font = F_MONO(9);
-        g.fillStyle = lk ? ctx.rgba('phosphor', 0.95) : ctx.rgba('amber', 0.8);
-        g.fillText(lk ? conf.toFixed(1) : '··.·', x + cw / 2, y0 + ch + 17);
-      });
+      // readout row: every cell cycles glyphs until its lock, with a confidence meter (numbers when
+      // the cells are wide enough to hold them)
+      const L = plateLayout(c);
+      const ro = L.ro;
+      const side = L.mode === 'side';
+      const ra = a * (side ? 1 - U.clamp((t - TL.match) / 0.25, 0, 1) : 1);
+      if (ro && ra > 0) {
+        const n = c.cells.length;
+        const fk = Math.min(hs, 1.3);
+        const { cw, ch } = ro;
+        const x0 = Math.round(side ? ro.x : W / 2 - (n * cw) / 2);
+        const y0 = Math.round(side ? ro.y : Math.min(plateBot + 22, ro.yMax));
+        const lw = n * cw;
+        g.globalAlpha = ra;
+        g.fillStyle = 'rgba(2,8,12,0.78)';
+        g.fillRect(x0 - 8, y0 - 16 * fk, lw + 16, ch + (16 + (ro.conf ? 26 : 12)) * fk);
+        g.font = F_UI(9 * fk);
+        g.letterSpacing = '1px';
+        g.fillStyle = ctx.rgba('holo', 0.9);
+        g.fillText(lw >= 150 * fk ? 'OCR · SIV-FR · 7 GLYPHS' : 'OCR · SIV-FR', x0 - 2, y0 - 5 * fk);
+        if (lw >= 225 * fk) {
+          g.textAlign = 'right';
+          g.fillStyle = ctx.rgba('text', 0.8);
+          g.fillText(`${(t - TL.ocr > 0 ? Math.min(99, ((t - TL.ocr) * 131) | 0) : 0) + 1} FR/S`, x0 + lw + 2, y0 - 5 * fk);
+        }
+        g.letterSpacing = '0px';
+        g.textAlign = 'center';
+        const fs = Math.round(ch * 0.66);
+        c.cells.forEach((cell, i) => {
+          const x = x0 + i * cw;
+          const lockAt = TL.lock0 + cell.order * TL.lockStep;
+          const lk = cell.sep || t >= lockAt;
+          g.strokeStyle = lk ? ctx.rgba('phosphor', cell.sep ? 0.25 : 0.7) : ctx.rgba('holo', 0.35);
+          g.strokeRect(x + 2.5, y0 + 0.5, cw - 5, ch);
+          let chr = cell.ch;
+          if (!lk) chr = GLYPHS[(hash(i + c.n * 13, (t * 16) | 0) * GLYPHS.length) | 0];
+          g.font = F_MONO(fs, 700);
+          g.fillStyle = lk ? (cell.sep ? ctx.rgba('text', 0.6) : C.ice) : C.amber;
+          g.fillText(chr, x + cw / 2, y0 + ch / 2 + fs * 0.36);
+          if (cell.sep) return;
+          const conf = lk ? cell.conf : 40 + 50 * hash(i, (t * 12) | 0);
+          const bw = cw - 8;
+          g.fillStyle = ctx.rgba('holo', 0.15);
+          g.fillRect(x + 4, y0 + ch + 4, bw, 3);
+          g.fillStyle = lk ? C.phosphor : C.amber;
+          g.fillRect(x + 4, y0 + ch + 4, (bw * conf) / 100, 3);
+          if (!ro.conf) return;
+          g.font = F_MONO(9 * fk);
+          g.fillStyle = lk ? ctx.rgba('phosphor', 0.95) : ctx.rgba('amber', 0.8);
+          g.fillText(lk ? conf.toFixed(1) : '··.·', x + cw / 2, y0 + ch + 17 * fk);
+        });
+      }
       g.textAlign = 'left';
       g.globalAlpha = 1;
       if (t >= TL.match) {
@@ -3016,8 +3161,7 @@
 
     // the DOM readout block's footprint (top-left), so canvas tags can keep clear of it
     let procOn = false;
-    let procW = 0;
-    let procH = 0;
+    let procBox = { x: 13, y: 42, w: 184, h: 150 };
     let subBox = null; // this frame's region coordinate line
 
     function drawOsd(g, now, alpha) {
@@ -3025,8 +3169,9 @@
       const d = new Date();
       const off = (HD.tz && HD.tz.offset) || 0;
       const loc = new Date(d.getTime() + off * 3600000);
-      const s = `${cur.info.camId}  ${loc.getUTCFullYear()}-${U.pad(loc.getUTCMonth() + 1)}-${U.pad(loc.getUTCDate())} ${U.fmtClock(d, off)}.${U.pad(loc.getUTCMilliseconds(), 3)}  REC`;
-      g.font = F_MONO(10);
+      const date = W < 330 ? '' : `${loc.getUTCFullYear()}-${U.pad(loc.getUTCMonth() + 1)}-${U.pad(loc.getUTCDate())} `;
+      const s = `${cur.info.camId}  ${date}${U.fmtClock(d, off)}.${U.pad(loc.getUTCMilliseconds(), 3)}  REC`;
+      g.font = F_MONO(10 * Math.min(hs, 1.3));
       g.textAlign = 'left';
       g.textBaseline = 'alphabetic';
       const y = H - BOT_H - 9;
@@ -3079,6 +3224,17 @@
     }
 
     /* ---- HUD text */
+    // the verdict box: bottom centre, or in the readout's place on a side-by-side strip
+    function placeFin() {
+      const f = plateLayout(cur).fin;
+      const st = el.fin.style;
+      st.left = f ? `${f.x / hs}px` : '';
+      st.top = f ? `${f.y / hs}px` : '';
+      st.bottom = f ? 'auto' : '';
+      st.transform = f ? 'translate(-50%, -50%)' : '';
+      st.maxWidth = f ? `${f.w / hs}px` : '';
+      el.fin.classList.toggle('is-side', !!f);
+    }
     function hudUpdate(t, v, si, ph, z, now) {
       const k = keys(cur);
       setT(el.st, STATE[ph]);
@@ -3095,7 +3251,7 @@
       setT(el.snr, `${snr.toFixed(1)} dB`);
       const clk = U.fmtClock(new Date(), (HD.tz && HD.tz.offset) || 0);
       setT(el.clk, clk);
-      const showProc = !!seq && t >= TL.enh1 && t < TL.ocr;
+      const showProc = procShown(t);
       if (el.proc.hidden === showProc) el.proc.hidden = !showProc;
       if (showProc) {
         const done = (si.plate ? 4 : 0) + si.a + Math.max(0, si.f);
@@ -3110,7 +3266,10 @@
         setT(el.pzm, `×${z.toFixed(1)} → ×${target.toFixed(1)}`);
       }
       const showFin = seq && t >= TL.match;
-      if (el.fin.hidden === !!showFin) el.fin.hidden = !showFin;
+      if (el.fin.hidden === !!showFin) {
+        el.fin.hidden = !showFin;
+        if (showFin) placeFin();
+      }
       const busy = !!(seq || cut);
       if (el.btn.classList.contains('is-busy') !== busy) {
         el.btn.classList.toggle('is-busy', busy);
@@ -3126,9 +3285,7 @@
       const t = seq ? seq.t : 0;
       const v = viewAt(t);
       const si = stageInfo(t);
-      procOn = !!seq && t >= TL.enh1 && t < TL.ocr;
-      procW = W <= 400 ? 190 : 202;
-      procH = W <= 330 ? 92 : W <= 400 ? 108 : 150;
+      procOn = procShown(t);
       const ph = !seq ? 'live' : t < TL.enh1 ? 'acq' : t < TL.ocr ? 'enh' : t < TL.match ? 'ocr' : 'match';
       const z = v.s / keys(cur).v0.s;
       const inCard = (t0) => t >= t0 && t < t0 + WORD_D;
@@ -3148,6 +3305,8 @@
       drawGrain(g, grain, bars, now);
       const pipA = seq ? U.clamp((z - 1.3) / 0.5, 0, 1) * (t >= TL.ocr ? Math.max(0, 1 - (t - TL.ocr) / 0.3) : 1) : 0;
       subBox = null;
+      tagBox = null;
+      pipBox = pipA > 0.05 ? pipRect() : null;
       if (!seq) {
         scanIdle(g, v);
       } else {
@@ -3197,15 +3356,75 @@
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       hudUpdate(t, v, si, ph, z, now);
     }
+    // the readout block runs through ENHANCE, stepping aside while a title card is up
+    const procShown = (t) =>
+      !!seq && t >= TL.enh1 + WORD_D * 0.8 && t < (procAway ? TL.z2 + TL.z2d * 0.4 : TL.ocr) && !(t >= TL.enh2 && t < TL.enh2 + WORD_D * 0.8);
     const regionSub = (b) => `X${U.pad(Math.round(b.x), 4)} Y${U.pad(Math.round(b.y), 4)} · ${Math.round(b.w)}×${Math.round(b.h)}`;
+
+    // HUD scale, strip heights and the readout block's footprint for this body size
+    function layoutHud() {
+      hs = U.clamp(Math.min(W / 700, H / 560), 1, 1.5);
+      hs = Math.round(hs * 20) / 20;
+      ctx.el.style.setProperty('--enh-k', String(hs));
+      TOP_H = 34 * hs;
+      BOT_H = 22 * hs;
+      const hidden = el.proc.hidden;
+      el.proc.hidden = false;
+      el.proc.style.left = '';
+      const hr = hud.getBoundingClientRect();
+      const pr = el.proc.getBoundingClientRect();
+      el.proc.hidden = hidden;
+      // per axis: a layout morph can leave the panel non-uniformly scaled while this runs
+      const qx = hr.width > 0 ? W / hr.width : 1;
+      const qy = hr.height > 0 ? H / hr.height : 1;
+      procHome = { x: (pr.left - hr.left) * qx, y: (pr.top - hr.top) * qy, w: pr.width * qx, h: pr.height * qy };
+      placeProc();
+    }
+    // Where the plate settles on a strip or a tiny body, the readout block would sit on it: beside the
+    // plate it moves over to the readout's spot (free until OCR); on a tiny body it bows out early.
+    let procHome = { x: 13, y: 42, w: 184, h: 150 };
+    let procAway = false;
+    function placeProc() {
+      const L = plateLayout(cur);
+      const pb = cur.S.plateBox;
+      const ph = (L.pw * pb.h) / pb.w;
+      let left = -1;
+      procAway = false;
+      if (L.mode !== 'stack' && hit(procHome, { x: L.px - L.pw / 2, y: L.py - ph / 2, w: L.pw, h: ph })) {
+        if (L.mode === 'side' && L.ro.x - 8 + procHome.w <= W - 6) left = L.ro.x - 8;
+        else procAway = true;
+      }
+      el.proc.style.left = left < 0 ? '' : `${left / hs}px`;
+      procBox = left < 0 ? procHome : { x: left, y: procHome.y, w: procHome.w, h: procHome.h };
+    }
+    // after a resize settles: a capture whose plate detail no longer fits the new shape is rebuilt,
+    // and a read already on the plate restarts from LIVE rather than play a mismatched frame
+    let fitAt = 0;
+    function refit() {
+      fitAt = 0;
+      if (staleDetail(cur)) {
+        if (seq && seq.t >= TL.acq2 - 0.4) {
+          seq = null;
+          idle = 0;
+          idleAt = RM ? 2.4 : 1.6;
+          tearT = 0.3;
+        }
+        queueDetail(cur);
+      }
+      if (next && staleDetail(next)) queueDetail(next);
+    }
 
     return {
       fps: 30,
       resize(w, h) {
         W = w;
         H = h;
+        layoutHud();
+        if (!el.fin.hidden) placeFin();
+        fitAt = performance.now() + 350;
       },
       tick(now, dt) {
+        if (fitAt && now > fitAt) refit();
         // a beat waiting on the builder borrows a little tick time; otherwise it lives in idle time
         const urgent = seq && ((!cur.plate && seq.t > TL.acq2 - 2) || (!next && seq.t > TL.match));
         if (!ric || urgent) pump(1.5);
@@ -3223,6 +3442,8 @@
             idle = 0;
             idleAt = cut.fromCam ? (RM ? 2.4 : 1.6) : R.range(5, 9);
             showCam();
+            placeProc();
+            if (staleDetail(cur)) queueDetail(cur);
             prepareNext();
           }
           if (cut.t >= CUT_D) cut = null;

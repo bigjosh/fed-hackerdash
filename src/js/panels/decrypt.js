@@ -41,6 +41,11 @@
   const ROT = 2600; // key-rotation banner; matches the shell's intrusion banner
   const BAD = 1400;
   const PHASE_SPEED = { elevated: 1, severe: 1.05, critical: 1.15, final: 1.3, zero: 1 };
+  const STATUS = ['SIEVING', 'CRACKED', 'NEXT FILE', 'ROTATION', 'COLLISION', 'OVERCLOCK'];
+  // every tick walks the grid a few times, so wall-sized bodies get bigger cells, not endless ones
+  const NMAX = 640;
+  const MAXC = 96;
+  const MAXR = 32;
 
   const ls = (c, px) => {
     if ('letterSpacing' in c) c.letterSpacing = px + 'px';
@@ -121,45 +126,58 @@
     const recovered = [];
     let dumpOff = R.int(0x1000, 0xe000) & 0xfff0;
     let dumpScroll = 0;
-    const thr = new Float32Array(128);
+    const thr = new Float32Array(384); // worker LEDs; a wide strip shows a few hundred
 
     /* ----------------------------------------------------------- layout */
 
+    // Tiers by body height: ultra (<120: one-line header and footer), compact (<200: one-line header),
+    // full. Width only decides what fits beside the grid (row offsets, memdump) and how dense it is.
     function layout(w, h) {
-      const tiny = w < 260 || h < 200;
-      const big = w >= 400 && h >= 380;
-      const pad = tiny ? 6 : big ? 10 : 8;
-      const headH = tiny ? 19 : big ? 44 : 38;
-      const footH = tiny ? 36 : big ? 76 : 62;
-      const dumpOn = !tiny && w >= 300;
-      const dF = big ? 10 : 9;
-      const dcw = charW(dF);
-      const dBytes = big ? 3 : 2;
-      const dumpW = dumpOn ? Math.ceil((5 + dBytes * 3 + dBytes) * dcw) : 0;
-      const labW = !tiny && w >= 280 ? Math.ceil(charW(9) * 4) + 7 : 0;
-      const colHead = tiny ? 0 : 12;
-      const GG = tiny ? 5 : 7;
-      const gx0 = pad + labW;
-      const gx1 = w - pad - (dumpOn ? dumpW + 14 : 0);
-      const gy0 = headH + 5 + colHead;
-      const gy1 = h - footH - 5;
-      const gw = gx1 - gx0;
-      const gh = gy1 - gy0;
-      // wall-sized bodies (solo on a monitor) get a bigger, denser grid instead of a lonely island
+      const ultra = h < 120;
+      const compact = !ultra && h < 200;
+      const oneLine = ultra || compact;
+      const narrow = w < 260;
+      const big = !oneLine && w >= 400 && h >= 380;
       const huge = w > 700 && h > 500;
-      let f = huge ? 24 : big ? 17 : tiny ? 13 : 15;
-      const maxC = huge ? 32 : 16;
-      const maxR = huge ? 16 : 10;
+      // chrome (labels, readouts, frames) grows on wall-sized bodies instead of staying 9 px in a corner
+      const k = oneLine ? 1 : U.clamp(Math.min(w / 620, h / 480), 1, 1.6);
+      const pad = ultra ? 5 : narrow || compact ? 6 : Math.round((big ? 10 : 8) * Math.min(k, 1.25));
+      const headH = ultra ? 17 : compact ? 19 : Math.round((big ? 44 : 38) * k);
+      const footH = ultra ? 18 : compact ? 36 : Math.round((big ? 76 : 62) * k);
+      const dF = (big || huge ? 10 : 9) * k;
+      const dcw = charW(dF);
+      const dBytes = w >= 1100 ? 4 : big ? 3 : 2;
+      const colHead = oneLine ? 0 : Math.round(12 * k);
+      const gy0 = headH + 5 + colHead;
+      const gy1 = h - footH - (ultra ? 4 : 5);
+      const dumpOn = !ultra && w >= 300 && gy1 - gy0 >= 40;
+      const dumpW = dumpOn ? Math.ceil((5 + dBytes * 3 + dBytes) * dcw) : 0;
+      const labW = !ultra && w >= 280 ? Math.ceil(charW(9 * k) * 4) + Math.round(7 * k) : 0;
+      const GG = narrow || ultra ? 5 : Math.round(7 * k);
+      const gx0 = pad + labW;
+      const gx1 = w - pad - (dumpOn ? dumpW + Math.round(14 * k) : 0);
+      const gw = gx1 - gx0;
+      const gh = Math.max(8, gy1 - gy0);
+      // row pitch: a 2-row strip packs its rows tighter so both fit
+      const RP = ultra ? 1.3 : 1.55;
+      // the biggest glyphs that still give a proper grid; wall-sized bodies scale the glyphs up
+      let f = huge ? U.clamp(Math.round(Math.min(gw / 44, gh / 12)), 20, 26) : big ? 17 : narrow || oneLine ? 13 : 15;
+      const minRows = U.clamp(Math.floor(gh / (10 * RP)), 1, 5);
       let cols = 4;
-      let rows = 2;
+      let rows = 1;
       for (; f >= 10; f--) {
-        cols = Math.min(maxC, Math.floor((gw + GG) / (4 * f + GG)) * 4);
-        rows = Math.min(maxR, Math.floor(gh / (f * 1.55)));
-        if (cols >= 12 && rows >= 5) break;
+        cols = Math.min(MAXC, Math.floor((gw + GG) / (4 * f + GG)) * 4);
+        rows = Math.min(MAXR, Math.floor(gh / (f * RP)));
+        if (cols >= 12 && rows >= minRows) break;
       }
       f = Math.max(10, f);
       cols = Math.max(4, cols);
-      rows = Math.max(2, rows);
+      rows = Math.max(1, rows);
+      if (cols * rows > NMAX) {
+        const s = Math.sqrt(NMAX / (cols * rows));
+        cols = Math.max(12, Math.floor((cols * s) / 4) * 4);
+        rows = Math.max(1, Math.min(rows, Math.floor(NMAX / cols)));
+      }
       const groups = cols / 4;
       const cw = Math.min(f * 1.5, (gw - (groups - 1) * GG) / cols);
       const rh = Math.min(f * 2.1, gh / rows);
@@ -169,22 +187,121 @@
       const oy = Math.round(gy0 + (gh - gridH) / 2);
       const fy = h - footH;
       const o = {
-        w, h, tiny, big, pad, headH, footH, dumpOn, dF, dcw, dBytes, dumpW, labW, colHead, GG,
-        f, cols, rows, cw, rh, gridW, gridH, ox, oy, gy0, gy1, fy,
+        w, h, k, ultra, compact, oneLine, narrow, big, pad, headH, footH, dumpOn, dF, dcw, dBytes, dumpW, labW,
+        colHead, GG, f, cols, rows, cw, rh, gridW, gridH, ox, oy, gy0, gy1, fy,
         dx: w - pad - dumpW,
         dlh: Math.round(dF * 1.45),
+        labels: !oneLine && w >= 280,
+        y1: oneLine ? pad + 4 : pad + 6 * k,
+        y2: pad + 21 * k,
+        hx: pad,
       };
-      if (tiny) {
+      if (o.labels) {
+        g.font = `600 ${9 * k}px ${UI}`;
+        ls(g, 1.6 * k);
+        o.hx = pad + Math.ceil(Math.max(g.measureText('TARGET').width, g.measureText('CIPHER').width)) + Math.round(7 * k);
+        ls(g, 0);
+      }
+      if (ultra) {
+        // bar, [rate · ETA], percentage on a single row
+        o.rowY = fy + 9;
+        o.pctW = Math.ceil(charW(11) * 6);
+        const room = w - pad * 2 - o.pctW - 8;
+        const c9 = charW(9);
+        o.statsMode = room - 21 * c9 - 8 >= 50 ? 'full' : room - 9 * c9 - 8 >= 40 ? 'eta' : '';
+        const sw = o.statsMode ? Math.ceil((o.statsMode === 'full' ? 21 : 9) * c9) + 8 : 0;
+        o.bar = { x: pad, y: o.rowY - 3, w: room - sw, h: 6 };
+        o.statsX = pad + o.bar.w + 8;
+      } else if (compact) {
         o.bar = { x: pad, y: fy + 5, w: w - pad * 2 - 52, h: 7 };
         o.rowC = fy + 25;
       } else {
-        const bh = big ? 11 : 9;
-        o.rowA = fy + (big ? 8 : 7);
-        o.bar = { x: pad, y: fy + (big ? 17 : 14), w: w - pad * 2, h: bh };
-        o.rowC = o.bar.y + bh + (big ? 15 : 12);
-        o.rowD = o.rowC + (big ? 17 : 14);
+        const bh = Math.round((big ? 11 : 9) * k);
+        o.rowA = fy + Math.round((big ? 8 : 7) * k);
+        o.bar = { x: pad, y: fy + Math.round((big ? 17 : 14) * k), w: w - pad * 2, h: bh };
+        o.rowC = o.bar.y + bh + Math.round((big ? 15 : 12) * k);
+        o.rowD = o.rowC + Math.round((big ? 17 : 14) * k);
+        o.pctF = (big ? 15 : 13) * k;
+        const room = w - pad * 2 - charW(o.pctF) * 6 - 8 * k;
+        g.font = `600 ${9 * k}px ${UI}`;
+        ls(g, 1.6 * k);
+        o.exLabel = ['KEYSPACE EXHAUSTION', 'EXHAUSTION', ''].find((t) => g.measureText(t).width <= room);
+        ls(g, 0);
       }
       return o;
+    }
+
+    // Header text is fitted once per file and size: the name shrinks, then truncates; a body too
+    // narrow for name and status tag side by side moves the tag down a row, or shows only its LED.
+    function fitText(text, px, minPx, maxW) {
+      ls(g, 0);
+      for (let p = px; p >= minPx; p -= 0.5) {
+        g.font = `500 ${p}px ${MONO}`;
+        if (g.measureText(text).width <= maxW) return { t: text, px: p, cut: false };
+      }
+      g.font = `500 ${minPx}px ${MONO}`;
+      let t = text;
+      while (t.length > 1 && g.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+      return { t: t + '…', px: minPx, cut: true };
+    }
+
+    function fitHead() {
+      const { w, pad, k, oneLine } = L;
+      const H = { x: L.hx, right: w - pad, y1: L.y1, y2: L.y2, tagRow: 1, mini: false, cipher: null, meta: null };
+      g.font = `600 ${9 * k}px ${UI}`;
+      ls(g, 1.4 * k);
+      let tagW = 0;
+      for (const s of STATUS) tagW = Math.max(tagW, g.measureText(s).width);
+      ls(g, 0);
+      tagW = Math.ceil(tagW + 17 * k);
+      const gap = Math.round(8 * k);
+      const room = H.right - H.x;
+      const nameF = oneLine ? 11 : (L.big ? 14 : 12) * k;
+      let nm = fitText(file.name, nameF, Math.max(10, nameF * 0.8), room - tagW - gap);
+      if (nm.cut) {
+        if (oneLine) {
+          H.mini = true;
+          nm = fitText(file.name, nameF, 9, room - Math.round(13 * k) - gap);
+        } else {
+          H.tagRow = 2;
+          nm = fitText(file.name, nameF, 9, room);
+        }
+      }
+      H.name = nm;
+      const metas = [`${file.size} · SALT ${salt}`, `SALT ${salt}`, file.size];
+      if (!oneLine) {
+        const cf = (L.big ? 11 : 10) * k;
+        H.cipher = fitText(cipher.name, cf, 9, H.tagRow === 2 ? room - tagW - gap : room);
+        H.cx = H.x;
+        H.cy = H.y2;
+        if (H.tagRow === 1) {
+          g.font = `500 ${H.cipher.px}px ${MONO}`;
+          const left = room - g.measureText(H.cipher.t).width - gap * 1.5;
+          H.metaPx = 9 * k;
+          g.font = `500 ${H.metaPx}px ${MONO}`;
+          H.meta = metas.find((t) => g.measureText(t).width <= left) || null;
+          H.my = H.y2;
+        }
+      } else if (!nm.cut) {
+        // a wide one-line header still has room for the cipher and the salt between name and tag
+        g.font = `500 ${nm.px}px ${MONO}`;
+        let x = H.x + g.measureText(nm.t).width + gap * 2;
+        const lim = H.right - (H.mini ? 13 : tagW) - gap * 2;
+        g.font = `500 10px ${MONO}`;
+        const cw = g.measureText(cipher.name).width;
+        if (x + cw <= lim) {
+          H.cipher = { t: cipher.name, px: 10 };
+          H.cx = x;
+          H.cy = H.y1;
+          x += cw + gap * 2;
+          H.metaPx = 9;
+          g.font = `500 9px ${MONO}`;
+          H.meta = metas.find((t) => x + g.measureText(t).width <= lim) || null;
+          H.mx = x;
+          H.my = H.y1;
+        }
+      }
+      L.H = H;
     }
 
     function place() {
@@ -260,19 +377,18 @@
 
     function drawStatic() {
       base.clear();
-      const { w, pad, headH, tiny, ox, oy, gridW, gridH, cols, rows, cw, rh } = L;
+      const { w, pad, headH, k, ox, oy, gridW, gridH, cols, rows, cw, rh } = L;
       b.save();
       b.textBaseline = 'middle';
       b.lineWidth = 1;
 
       // header labels + divider
-      if (!tiny) {
-        b.font = `600 9px ${UI}`;
-        ls(b, 1.6);
+      if (L.labels) {
+        b.font = `600 ${9 * k}px ${UI}`;
+        ls(b, 1.6 * k);
         b.fillStyle = C.dim;
-        b.fillText('TARGET', pad, pad + 6);
-        b.fillText('CIPHER', pad, pad + 21);
-        L.hx = pad + Math.ceil(Math.max(b.measureText('TARGET').width, b.measureText('CIPHER').width)) + 7;
+        b.fillText('TARGET', pad, L.y1);
+        b.fillText('CIPHER', pad, L.y2);
         ls(b, 0);
       }
       b.strokeStyle = rgba('holo', 0.24);
@@ -307,28 +423,28 @@
       b.stroke();
       b.setLineDash([]);
       b.strokeStyle = rgba('holo', 0.5);
-      brackets(b, ox - 3.5, oy - 2.5, gridW + 7, gridH + 5, 6);
+      brackets(b, ox - 3.5, oy - 2.5, gridW + 7, gridH + 5, Math.round(6 * k));
 
       // column indices + row offsets
       if (L.colHead) {
-        b.font = `500 9px ${MONO}`;
+        b.font = `500 ${9 * k}px ${MONO}`;
         b.textAlign = 'center';
         b.fillStyle = rgba('dim', 0.75);
-        for (let c = 0; c < cols; c++) b.fillText(HEX[c & 15], cellX[c], oy - 9);
+        for (let c = 0; c < cols; c++) b.fillText(HEX[c & 15], cellX[c], oy - 9 * k);
       }
       if (L.labW) {
-        b.font = `500 9px ${MONO}`;
+        b.font = `500 ${9 * k}px ${MONO}`;
         b.textAlign = 'right';
         for (let r = 0; r < rows; r++) {
           b.fillStyle = rgba('dim', r % 2 ? 0.55 : 0.8);
-          b.fillText(U.hex(r * cols * 4, 4), ox - 7, cellY[r]);
+          b.fillText(U.hex(r * cols * 4, 4), ox - 7 * k, cellY[r]);
         }
       }
       b.textAlign = 'left';
 
       // hex dump column
       if (L.dumpOn) {
-        const sx = L.dx - 7.5;
+        const sx = Math.round(L.dx - 7 * k) - 0.5;
         b.strokeStyle = rgba('holo', 0.2);
         b.beginPath();
         b.moveTo(sx, L.gy0 - L.colHead);
@@ -341,11 +457,14 @@
           b.lineTo(sx, Math.round(y) + 0.5);
         }
         b.stroke();
-        b.font = `600 9px ${UI}`;
-        ls(b, 1.4);
-        b.fillStyle = C.dim;
-        b.fillText('MEMDUMP', L.dx, oy - 9);
-        ls(b, 0);
+        // the label sits in the column-index strip, which the one-line tiers do not have
+        if (L.colHead) {
+          b.font = `600 ${9 * k}px ${UI}`;
+          ls(b, 1.4 * k);
+          b.fillStyle = C.dim;
+          b.fillText('MEMDUMP', L.dx, oy - 9 * k);
+          ls(b, 0);
+        }
       }
 
       // footer frame
@@ -354,11 +473,11 @@
       b.strokeRect(B.x + 0.5, B.y + 0.5, B.w - 1, B.h - 1);
       b.strokeStyle = rgba('holo', 0.3);
       tickRow(b, B.x, B.x + B.w - 1, B.y + B.h + 1, (B.w - 1) / 20, 2, true);
-      if (!tiny) {
-        b.font = `600 9px ${UI}`;
-        ls(b, 1.6);
+      if (!L.oneLine) {
+        b.font = `600 ${9 * k}px ${UI}`;
+        ls(b, 1.6 * k);
         b.fillStyle = C.dim;
-        b.fillText('KEYSPACE EXHAUSTION', pad, L.rowA);
+        if (L.exLabel) b.fillText(L.exLabel, pad, L.rowA);
         b.fillText('THR', pad, L.rowD);
         ls(b, 0);
       }
@@ -367,7 +486,9 @@
 
     /* ------------------------------------------------------------ grid */
 
-    function initCells() {
+    // keepKey: a resize re-cuts the grid but the key being cracked stays the same where cells overlap
+    function initCells(keepKey) {
+      const prevKey = keepKey ? key : null;
       n = L.cols * L.rows;
       glyph = new Uint8Array(n);
       key = new Uint8Array(n);
@@ -376,7 +497,7 @@
       lockT = new Float64Array(n).fill(-1e9);
       badT = new Float64Array(n).fill(-1e9);
       for (let i = 0; i < n; i++) {
-        key[i] = R.int(0, 15);
+        key[i] = prevKey && i < prevKey.length ? prevKey[i] : R.int(0, 15);
         glyph[i] = R.int(0, NG - 1);
       }
       pending = R.shuffle(Array.from({ length: n }, (_, i) => i));
@@ -421,7 +542,10 @@
       stamp = null;
       eta = dur;
       ctx.meta(cipher.name);
-      if (L) initCells();
+      if (L) {
+        initCells();
+        fitHead();
+      }
       ctx.alert('info', `CIPHER BREAK ENGAGED · ${file.name} · ${cipher.name}`);
     }
 
@@ -491,9 +615,10 @@
       const need = Math.ceil((L.gy1 - L.gy0) / L.dlh) + 2;
       dump = [];
       for (let i = 0; i < need; i++) dump.push(dumpLine());
+      const fd = (L.fadeH = Math.round(18 * L.k));
       L.dumpFade = [
-        g.createLinearGradient(0, L.gy0, 0, L.gy0 + 18),
-        g.createLinearGradient(0, L.gy1 - 18, 0, L.gy1),
+        g.createLinearGradient(0, L.gy0, 0, L.gy0 + fd),
+        g.createLinearGradient(0, L.gy1 - fd, 0, L.gy1),
       ];
       L.dumpFade[0].addColorStop(0, 'rgba(0,0,0,1)');
       L.dumpFade[0].addColorStop(1, 'rgba(0,0,0,0)');
@@ -520,8 +645,12 @@
 
     function buildStamp() {
       if (!L) return;
+      const { k, oneLine } = L;
+      const small = oneLine || L.narrow;
       const dpr = live.dpr;
-      const maxW = Math.min(L.w - L.pad * 2 - 8, L.big ? 380 : 320);
+      const maxW = Math.min(L.w - L.pad * 2 - 8, (L.big ? 380 : 320) * k);
+      // the stamp lives in the band between header and footer (drawStamp centres it there)
+      const maxH = L.fy - L.headH - 9;
       const title = 'KEY RECOVERED';
       const cv = document.createElement('canvas');
       cv.addEventListener('contextrestored', onRestore);
@@ -529,31 +658,58 @@
       s.font = `400 20px ${DISPLAY}`;
       ls(s, 2.4);
       const tw20 = s.measureText(title).width;
-      let fs = Math.min(L.big ? 24 : L.tiny ? 14 : 18, (20 * (maxW - 34)) / tw20);
+      let fs = Math.min((L.big ? 24 : oneLine ? 14 : 18) * k, (20 * (maxW - 34)) / tw20);
       fs = Math.max(9, Math.floor(fs * 2) / 2);
+      const plain = file.plain || null;
+      const tf = (small ? 9 : 10) * k;
+      const barH = Math.round((small ? 12 : 14) * k);
+      const lineH = (small ? 11 : 12.5) * k;
+      const padT = oneLine ? 6 : 11 * k;
+      const plainFont = `500 ${tf}px ${MONO}`;
+      const rows = [];
+      if (plain) {
+        s.font = plainFont;
+        ls(s, 0);
+        // a wrapped paragraph keeps its colour on every row (the sign-off line is phosphor)
+        for (const p of plain) for (const t of wrapText(s, p, maxW - 18)) rows.push({ t, sig: p.startsWith('—') });
+      }
+      let showFile = !oneLine;
+      let showBar = true;
+      let nRows = plain ? rows.length : 1;
+      const geo = () => {
+        const o = { titleY: padT + fs * 0.6, barY: 0 };
+        let y = padT + fs * 1.2;
+        if (showBar) {
+          o.barY = Math.round(y + 6 * k);
+          y = o.barY + barH;
+        }
+        o.keyY = y + 10 * k;
+        const last = nRows ? o.keyY + (nRows - 1) * lineH : 0;
+        o.fileY = nRows ? last + 12 * k : o.keyY;
+        o.sh = Math.ceil(showFile ? o.fileY + 11 * k : nRows ? last + 11 * k : y + (oneLine ? 6 : 10 * k));
+        return o;
+      };
+      // too tall for the band: shed the file line, then plaintext rows, the key, the bar, then title size
+      let G = geo();
+      while (G.sh > maxH) {
+        if (showFile) showFile = false;
+        else if (nRows > 1) nRows--;
+        else if (nRows) nRows = 0;
+        else if (showBar) showBar = false;
+        else if (fs > 9) fs = Math.max(9, fs - 1);
+        else break;
+        G = geo();
+      }
       const lsp = fs * 0.12;
       const font = `400 ${fs}px ${DISPLAY}`;
       s.font = font;
       ls(s, lsp);
       const tw = s.measureText(title).width;
-      const plain = file.plain || null;
-      const sw = Math.ceil(plain ? maxW : Math.min(maxW, tw + 44));
-      const showFile = !L.tiny;
-      const titleY = 11 + fs * 0.6;
-      const barH = L.tiny ? 12 : 14;
-      const barY = Math.round(11 + fs * 1.2 + 6);
-      const keyY = barY + barH + 10;
-      const plainFont = `500 ${L.tiny ? 9 : 10}px ${MONO}`;
-      const rows = [];
-      if (plain) {
-        s.font = plainFont;
-        ls(s, 0);
-        for (const p of plain) rows.push(...wrapText(s, p, sw - 18));
-      }
-      const lineH = L.tiny ? 11 : 12.5;
-      const lastY = keyY + Math.max(0, rows.length - 1) * lineH;
-      const fileY = lastY + 12;
-      const sh = Math.ceil((showFile ? fileY : lastY) + 11);
+      s.font = `500 ${tf}px ${MONO}`;
+      ls(s, 0.6);
+      const keyW = !plain && nRows ? s.measureText('KEY ' + keyText).width + 24 : 0;
+      const sw = Math.ceil(plain ? maxW : Math.min(maxW, Math.max(tw + 44 * k, keyW)));
+      const sh = G.sh;
       cv.width = Math.round(sw * dpr);
       cv.height = Math.round(sh * dpr);
       s.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -569,47 +725,78 @@
       s.strokeRect(3.5, 3.5, sw - 7, sh - 7);
       s.lineWidth = 2;
       s.strokeStyle = C.phosphor;
-      brackets(s, 1, 1, sw - 2, sh - 2, 9);
+      brackets(s, 1, 1, sw - 2, sh - 2, Math.min(9 * k, sh / 3));
 
       s.font = font;
       ls(s, lsp);
       s.shadowColor = rgba('phosphor', 0.95);
-      s.shadowBlur = 14 * dpr;
+      s.shadowBlur = 14 * k * dpr;
       s.fillStyle = C.phosphor;
-      s.fillText(title, sw / 2 + lsp / 2, titleY);
+      s.fillText(title, sw / 2 + lsp / 2, G.titleY);
       s.shadowBlur = 0;
       s.fillStyle = 'rgba(214, 255, 226, 0.55)';
-      s.fillText(title, sw / 2 + lsp / 2, titleY);
+      s.fillText(title, sw / 2 + lsp / 2, G.titleY);
 
-      s.fillStyle = C.phosphor;
-      s.fillRect(10, barY, sw - 20, barH);
-      s.fillStyle = C.bg;
-      s.font = `700 ${L.tiny ? 9 : 10}px ${UI}`;
-      const gl = L.tiny ? 2.2 : 3.2;
-      ls(s, gl);
-      s.fillText(plain ? 'PLAINTEXT · COVER LEWIS' : 'ACCESS GRANTED', sw / 2 + gl / 2, barY + barH / 2 + 0.5);
-      s.fillRect(14, barY + barH / 2 - 2, 4, 4);
-      s.fillRect(sw - 18, barY + barH / 2 - 2, 4, 4);
-
-      ls(s, 0.6);
-      s.font = `500 ${L.tiny ? 9 : 10}px ${MONO}`;
-      s.fillStyle = C.ice;
-      if (plain) {
-        s.font = plainFont;
-        ls(s, 0);
-        rows.forEach((r, i) => {
-          s.fillStyle = r.startsWith('—') ? rgba('phosphor', 0.8) : C.ice;
-          s.fillText(r, sw / 2, keyY + i * lineH);
-        });
-      } else s.fillText('KEY ' + keyText, sw / 2, keyY);
-      if (showFile) {
-        s.font = `500 9px ${MONO}`;
-        s.fillStyle = rgba('phosphor', 0.72);
-        s.fillText(`${file.name} · ${crackSecs.toFixed(1)} s`, sw / 2, fileY);
+      if (showBar) {
+        s.fillStyle = C.phosphor;
+        s.fillRect(10, G.barY, sw - 20, barH);
+        s.fillStyle = C.bg;
+        s.font = `700 ${tf}px ${UI}`;
+        // shorter wording and tighter tracking before the label may touch the end studs
+        let label = '';
+        let gl = 0;
+        for (const t of plain ? ['PLAINTEXT · COVER LEWIS', 'COVER LEWIS'] : ['ACCESS GRANTED', 'GRANTED']) {
+          for (const sp of [(small ? 2.2 : 3.2) * k, 1]) {
+            ls(s, sp);
+            if (s.measureText(t).width <= sw - 44 * k) {
+              label = t;
+              gl = sp;
+              break;
+            }
+          }
+          if (label) break;
+        }
+        if (label) {
+          ls(s, gl);
+          s.fillText(label, sw / 2 + gl / 2, G.barY + barH / 2 + 0.5);
+        }
+        const st = Math.round(4 * k);
+        s.fillRect(14, G.barY + barH / 2 - st / 2, st, st);
+        s.fillRect(sw - 14 - st, G.barY + barH / 2 - st / 2, st, st);
       }
+
+      if (nRows) {
+        s.font = plainFont;
+        if (plain) {
+          ls(s, 0);
+          rows.slice(0, nRows).forEach((r, i) => {
+            s.fillStyle = r.sig ? rgba('phosphor', 0.8) : C.ice;
+            s.fillText(r.t, sw / 2, G.keyY + i * lineH);
+          });
+        } else {
+          ls(s, 0.6);
+          s.fillStyle = C.ice;
+          let kt = 'KEY ' + keyText;
+          if (s.measureText(kt).width > sw - 14) {
+            kt = keyText;
+            ls(s, 0);
+          }
+          s.fillText(kt, sw / 2, G.keyY);
+        }
+      }
+      if (showFile) {
+        s.font = `500 ${9 * k}px ${MONO}`;
+        ls(s, 0);
+        s.fillStyle = rgba('phosphor', 0.72);
+        let ft = `${file.name} · ${crackSecs.toFixed(1)} s`;
+        if (s.measureText(ft).width > sw - 14) ft = file.name;
+        while (ft.length > 2 && s.measureText(ft).width > sw - 14) ft = ft.slice(0, -2) + '…';
+        s.fillText(ft, sw / 2, G.fileY);
+      }
+      ls(s, 0);
       s.fillStyle = 'rgba(0, 0, 0, 0.22)';
       for (let y = 0; y < sh; y += 3) s.fillRect(0, y, sw, 1);
-      stamp = { cv, w: sw, h: sh, fs, lsp, title, titleY, font };
+      stamp = { cv, w: sw, h: sh, fs, lsp, title, titleY: G.titleY, font };
     }
 
     /* ----------------------------------------------------------- update */
@@ -698,22 +885,27 @@
 
     /* ------------------------------------------------------------- draw */
 
-    function tag(xr, y, text, col, blink) {
-      g.font = `600 9px ${UI}`;
-      ls(g, 1.4);
-      const tw = g.measureText(text).width;
-      const w = Math.ceil(tw + 17);
+    function tag(xr, y, text, col, blink, mini) {
+      const k = L.k;
+      g.font = `600 ${9 * k}px ${UI}`;
+      ls(g, 1.4 * k);
+      const bh = Math.round(13 * k);
+      // mini: the status LED alone, for bodies too narrow to spell it out
+      const w = mini ? bh : Math.ceil(g.measureText(text).width + 17 * k);
       const x = Math.round(xr - w);
-      const y0 = Math.round(y - 6.5);
+      const y0 = Math.round(y - bh / 2);
+      const d = Math.round(4 * k);
       g.fillStyle = rgba(col, 0.1);
-      g.fillRect(x, y0, w, 13);
+      g.fillRect(x, y0, w, bh);
       g.strokeStyle = rgba(col, 0.6);
       g.lineWidth = 1;
-      g.strokeRect(x + 0.5, y0 + 0.5, w - 1, 12);
+      g.strokeRect(x + 0.5, y0 + 0.5, w - 1, bh - 1);
       g.fillStyle = rgba(col, blink ? 0.25 : 1);
-      g.fillRect(x + 4, y - 2, 4, 4);
-      g.fillStyle = C[col] || col;
-      g.fillText(text, x + 11, y + 0.5);
+      g.fillRect(mini ? x + Math.round((w - d) / 2) : x + d, Math.round(y - d / 2), d, d);
+      if (!mini) {
+        g.fillStyle = C[col] || col;
+        g.fillText(text, x + 11 * k, y + 0.5);
+      }
       ls(g, 0);
     }
 
@@ -722,12 +914,15 @@
       const k = Math.floor(U.clamp((performance.now() - since) / ms, 0, 1) * text.length);
       if (k >= text.length) return text;
       let s = text.slice(0, k);
-      for (let i = k; i < text.length; i++) s += text[i] === '.' || text[i] === '-' ? text[i] : GLYPHS[(R() * NG) | 0];
+      for (let i = k; i < text.length; i++) {
+        const ch = text[i];
+        s += ch === '.' || ch === '-' || ch === '…' ? ch : GLYPHS[(R() * NG) | 0];
+      }
       return s;
     }
 
     function drawHeader(now) {
-      const { w, pad, tiny, big } = L;
+      const H = L.H;
       const rot = now - rotAt < ROT && mode === 'crack';
       const blink = !still && ((now / 380) | 0) % 2 === 0;
       let st = ['SIEVING', 'amber'];
@@ -737,27 +932,24 @@
       else if (now < stallUntil) st = ['COLLISION', 'amber'];
       else if (overclocked()) st = ['OVERCLOCK', 'neon'];
       g.textBaseline = 'middle';
-      const name = scrambled(file.name, revealAt, 650);
-      if (tiny) {
-        g.font = `500 11px ${MONO}`;
-        g.fillStyle = C.ice;
-        g.fillText(name, pad, pad + 4);
-        tag(w - pad, pad + 4, st[0], st[1], blink && mode === 'crack');
-        return;
-      }
-      const hx = L.hx || pad + 44;
-      g.font = `500 ${big ? 14 : 12}px ${MONO}`;
+      g.font = `500 ${H.name.px}px ${MONO}`;
       g.fillStyle = C.ice;
-      g.fillText(name, hx, pad + 6);
-      g.font = `500 ${big ? 11 : 10}px ${MONO}`;
-      g.fillStyle = C.holo;
-      g.fillText(scrambled(cipher.name, revealAt + 200, 600), hx, pad + 21);
-      tag(w - pad, pad + 6, st[0], st[1], blink && mode === 'crack');
-      g.font = `500 9px ${MONO}`;
-      g.textAlign = 'right';
-      g.fillStyle = C.dim;
-      g.fillText(`${file.size} · SALT ${salt}`, w - pad, pad + 21);
-      g.textAlign = 'left';
+      g.fillText(scrambled(H.name.t, revealAt, 650), H.x, H.y1);
+      if (H.cipher) {
+        g.font = `500 ${H.cipher.px}px ${MONO}`;
+        g.fillStyle = C.holo;
+        g.fillText(scrambled(H.cipher.t, revealAt + 200, 600), H.cx, H.cy);
+      }
+      tag(H.right, H.tagRow === 2 ? H.y2 : H.y1, st[0], st[1], blink && mode === 'crack', H.mini);
+      if (H.meta) {
+        g.font = `500 ${H.metaPx}px ${MONO}`;
+        g.fillStyle = C.dim;
+        if (H.mx == null) {
+          g.textAlign = 'right';
+          g.fillText(H.meta, H.right, H.my);
+          g.textAlign = 'left';
+        } else g.fillText(H.meta, H.mx, H.my);
+      }
     }
 
     function drawGrid(now) {
@@ -903,9 +1095,9 @@
       }
       g.globalCompositeOperation = 'destination-out';
       g.fillStyle = L.dumpFade[0];
-      g.fillRect(dx - 2, gy0, L.dumpW + 4, 18);
+      g.fillRect(dx - 2, gy0, L.dumpW + 4, L.fadeH);
       g.fillStyle = L.dumpFade[1];
-      g.fillRect(dx - 2, gy1 - 18, L.dumpW + 4, 18);
+      g.fillRect(dx - 2, gy1 - L.fadeH, L.dumpW + 4, L.fadeH);
       g.restore();
     }
 
@@ -919,8 +1111,38 @@
       }
     }
 
+    const segLen = (list) => {
+      let c = 0;
+      for (const s of list) c += s[0].length;
+      return c;
+    };
+
+    // alpha ramps for the worker LEDs, so a few hundred of them do not build colour strings per frame
+    const ramp = (c) => Array.from({ length: 21 }, (_, i) => rgba(c, i / 20));
+    const RAMP_HOLO = ramp('holo');
+    const RAMP_PHOS = ramp('phosphor');
+
+    // worker-thread LEDs across [x, x + width): 4 px pitch, spread out once every thread is on screen
+    function workers(x, y, width, k, win) {
+      let st = 4 * k;
+      let count = Math.floor(width / st);
+      if (count <= 0) return;
+      if (count > thr.length) {
+        count = thr.length;
+        st = width / count;
+      }
+      const hotC = overclocked() ? C.neon : C.amber;
+      const bw = Math.max(2, Math.round(3 * k));
+      const bh = Math.round(6 * k);
+      for (let i = 0; i < count; i++) {
+        const v = thr[i];
+        g.fillStyle = win ? RAMP_PHOS[((0.2 + v * 0.6) * 20 + 0.5) | 0] : v > 0.93 ? hotC : RAMP_HOLO[((0.12 + v * 0.7) * 20 + 0.5) | 0];
+        g.fillRect(Math.round(x + i * st), y, bw, bh);
+      }
+    }
+
     function drawFooter(now) {
-      const { w, pad, tiny, big } = L;
+      const { w, pad, big, k } = L;
       const B = L.bar;
       const win = mode !== 'crack';
       const recent = now - rotAt < 1600 && mode === 'crack';
@@ -947,12 +1169,13 @@
       g.save();
       g.globalCompositeOperation = 'destination-out';
       g.fillStyle = '#000';
-      for (let x = x0 + 3; x < x0 + fw; x += 4) g.fillRect(x, y0, 1, h0);
+      const led = Math.max(4, Math.round(4 * k));
+      for (let x = x0 + led - 1; x < x0 + fw; x += led) g.fillRect(x, y0, 1, h0);
       g.restore();
       if (recent) {
-        const k = 1 - (now - rotAt) / 1600;
-        g.fillStyle = rgba('threat', 0.55 * k);
-        g.fillRect(x0 + fw, y0, ((B.w - 2) * rotDrop) / 100, h0);
+        const a = 1 - (now - rotAt) / 1600;
+        g.fillStyle = rgba('threat', 0.55 * a);
+        g.fillRect(x0 + fw, y0, Math.min(((B.w - 2) * rotDrop) / 100, B.w - 2 - fw), h0);
       }
       if (fw > 1) {
         g.fillStyle = rgba(col === 'holo' ? 'ice' : col, 0.3);
@@ -966,63 +1189,87 @@
       const etaTxt = `${U.pad(Math.floor(etaS / 60))}:${U.pad(etaS % 60)}`;
       g.textBaseline = 'middle';
       const sep = rgba('dim', 0.8);
-      if (tiny) {
+      const secs = crackSecs.toFixed(1) + ' s';
+      const stats = win
+        ? [['SOLVED ', C.dim], [secs, C.phosphor]]
+        : [[rateShown + ' PH/s', C.holo], [' · ', sep], ['ETA ', C.dim], [etaTxt, C.amber]];
+      const short = win ? [[secs, C.phosphor]] : [['ETA ', C.dim], [etaTxt, C.amber]];
+
+      if (L.oneLine) {
         g.font = `500 11px ${MONO}`;
         g.textAlign = 'right';
         g.fillStyle = win ? C.phosphor : C.ice;
-        g.fillText(pctTxt, w - pad, B.y + B.h / 2 + 0.5);
-        g.font = `500 9px ${MONO}`;
-        g.fillStyle = C.dim;
-        g.fillText(cipher.space, w - pad, L.rowC);
+        g.fillText(pctTxt, w - pad, (L.ultra ? L.rowY : B.y + B.h / 2) + 0.5);
         g.textAlign = 'left';
-        segs(
-          pad,
-          L.rowC,
-          win
-            ? [['SOLVED ', C.dim], [crackSecs.toFixed(1) + ' s', C.phosphor]]
-            : [[rateShown + ' PH/s', C.holo], [' · ', sep], ['ETA ', C.dim], [etaTxt, C.amber]],
-          9
-        );
+        if (L.ultra) {
+          if (L.statsMode) segs(L.statsX, L.rowY, L.statsMode === 'full' ? stats : short, 9);
+          return;
+        }
+        // compact: readouts left; block counter (wide) or keyspace right; worker LEDs fill the gap
+        const c9 = charW(9);
+        const room = w - pad * 2;
+        const left = segLen(stats) * c9 <= room ? stats : short;
+        const lw = segLen(left) * c9;
+        segs(pad, L.rowC, left, 9);
+        const blk = `${U.pad(lockedCount, 3)}/${U.pad(n, 3)}`;
+        const cands = w >= 400
+          ? [[['BLK ', C.dim], [blk, win ? C.phosphor : C.ice]], [[cipher.space, C.dim]]]
+          : [[[cipher.space, C.dim]]];
+        let rx = w - pad;
+        for (const r of cands) {
+          const rw = segLen(r) * c9;
+          if (lw + 12 + rw <= room) {
+            rx = w - pad - rw;
+            segs(rx, L.rowC, r, 9);
+            break;
+          }
+        }
+        const wx = pad + lw + 12;
+        if (rx - 12 - wx >= 40) workers(wx, Math.round(L.rowC - 3), rx - 12 - wx, 1, win);
         return;
       }
 
-      g.font = `500 ${big ? 15 : 13}px ${MONO}`;
+      g.font = `500 ${L.pctF}px ${MONO}`;
       g.textAlign = 'right';
       g.fillStyle = win ? C.phosphor : C.ice;
       g.fillText(pctTxt, w - pad, L.rowA);
       g.textAlign = 'left';
 
-      const px = big ? 10.5 : 9;
-      const list = win
+      const px = (big ? 10.5 : 9) * k;
+      const groups = win
         ? [
-          ['KEYSPACE ', C.dim], [cipher.space, C.text], [' · ', sep],
-          [pctTxt, C.phosphor], [' · ', sep],
-          ['SOLVED IN ', C.dim], [crackSecs.toFixed(1) + ' s', C.phosphor],
+          [['KEYSPACE ', C.dim], [cipher.space, C.text]],
+          [[pctTxt, C.phosphor]],
+          [['SOLVED IN ', C.dim], [secs, C.phosphor]],
         ]
         : [
-          ['KEYSPACE ', C.dim], [cipher.space, C.text], [' · ', sep],
-          [pctTxt, C.ice], [' · ', sep],
-          [rateShown + ' PH/s', C.holo], [' · ', sep],
-          ['ETA ', C.dim], [etaTxt, C.amber],
+          [['KEYSPACE ', C.dim], [cipher.space, C.text]],
+          [[pctTxt, C.ice]],
+          [[rateShown + ' PH/s', C.holo]],
+          [['ETA ', C.dim], [etaTxt, C.amber]],
         ];
-      let chars = 0;
-      for (const s of list) chars += s[0].length;
-      if (chars * charW(px) > w - pad * 2) list.splice(0, 1);
-      segs(pad, L.rowC, list, px);
+      // a narrow body drops the leading readouts instead of running into the edge
+      let chars = -3;
+      for (const gr of groups) chars += segLen(gr) + 3;
+      const cwp = charW(px);
+      while (groups.length > 1 && chars * cwp > w - pad * 2) chars -= segLen(groups.shift()) + 3;
+      let x = pad;
+      groups.forEach((gr, i) => {
+        if (i) {
+          segs(x, L.rowC, [[' · ', sep]], px);
+          x += 3 * cwp;
+        }
+        segs(x, L.rowC, gr, px);
+        x += segLen(gr) * cwp;
+      });
 
       // worker threads
       const blk = `${U.pad(lockedCount, 3)}/${U.pad(n, 3)}`;
-      const blkW = (4 + blk.length) * charW(9);
-      const sx = pad + 24;
-      const count = Math.min(thr.length, Math.floor((w - pad * 2 - 24 - blkW - 8) / 4));
-      const y = Math.round(L.rowD - 3);
-      const hotC = overclocked() ? C.neon : C.amber;
-      for (let i = 0; i < count; i++) {
-        const v = thr[i];
-        g.fillStyle = win ? rgba('phosphor', 0.2 + v * 0.6) : v > 0.93 ? hotC : rgba('holo', 0.12 + v * 0.7);
-        g.fillRect(sx + i * 4, y, 3, 6);
-      }
-      segs(w - pad - blkW, L.rowD, [['BLK ', C.dim], [blk, win ? C.phosphor : C.ice]], 9);
+      const b9 = 9 * k;
+      const blkW = (4 + blk.length) * charW(b9);
+      const sx = pad + 24 * k;
+      workers(sx, Math.round(L.rowD - 3 * k), w - pad - blkW - 8 * k - sx, k, win);
+      segs(w - pad - blkW, L.rowD, [['BLK ', C.dim], [blk, win ? C.phosphor : C.ice]], b9);
     }
 
     function drawStamp(now) {
@@ -1042,7 +1289,10 @@
       g.fillRect(pad - 2, top, w - pad * 2 + 4, bot - top);
 
       const cx = Math.round(w / 2);
-      const cy = Math.round(L.oy + L.gridH / 2);
+      // on the grid, but never over the header or footer readouts
+      const lo = top + stamp.h / 2 + 2;
+      const hi = bot - stamp.h / 2 - 2;
+      const cy = Math.round(lo <= hi ? U.clamp(L.oy + L.gridH / 2, lo, hi) : (top + bot) / 2);
       const gl = still ? 0 : Math.max(0, 1 - t2 / 0.5);
       const hit = !still && now - rotAt < 700;
       const micro = !still && gl === 0 && (hit || now % 1700 < 70);
@@ -1058,7 +1308,7 @@
         const slices = 8;
         const hS = stamp.h / slices;
         for (let i = 0; i < slices; i++) {
-          const amp = gl * 16 + (hit ? 12 : micro ? 5 : 0);
+          const amp = (gl * 16 + (hit ? 12 : micro ? 5 : 0)) * L.k;
           const dx = R() < 0.55 ? (R() - 0.5) * 2 * amp : 0;
           g.drawImage(cv, 0, i * hS * dpr, cv.width, hS * dpr, x0 + dx, y0 + i * hS, stamp.w, hS);
         }
@@ -1092,8 +1342,9 @@
     function drawRotation(now) {
       const t = (now - rotAt) / ROT;
       if (t < 0 || t >= 1 || mode !== 'crack') return;
-      const { w, pad, tiny } = L;
-      const bh = tiny ? 16 : 19;
+      const { w, pad, k, oneLine } = L;
+      const bh = Math.round((oneLine ? 16 : 19) * k);
+      const hz = Math.round(14 * k); // hazard-stripe caps
       const y = Math.round(L.oy + L.gridH / 2 - bh / 2);
       const x0 = pad;
       const x1 = w - pad;
@@ -1108,17 +1359,19 @@
       // hazard stripes at both ends
       g.save();
       g.beginPath();
-      g.rect(x0, y + 1, 14, bh - 2);
-      g.rect(x1 - 14, y + 1, 14, bh - 2);
+      g.rect(x0, y + 1, hz, bh - 2);
+      g.rect(x1 - hz, y + 1, hz, bh - 2);
       g.clip();
       g.fillStyle = C.amber;
       g.beginPath();
-      const shift = still ? 0 : ((now / 40) | 0) % 6;
-      for (const [a0, a1] of [[x0 - bh, x0 + 14], [x1 - 14 - bh, x1]]) {
-        for (let sx = a0 + shift; sx < a1; sx += 6) {
+      const pitch = Math.round(6 * k);
+      const sw = pitch / 2;
+      const shift = still ? 0 : ((now / 40) | 0) % pitch;
+      for (const [a0, a1] of [[x0 - bh, x0 + hz], [x1 - hz - bh, x1]]) {
+        for (let sx = a0 + shift; sx < a1; sx += pitch) {
           g.moveTo(sx, y + bh);
-          g.lineTo(sx + 3, y + bh);
-          g.lineTo(sx + 3 + bh, y);
+          g.lineTo(sx + sw, y + bh);
+          g.lineTo(sx + sw + bh, y);
           g.lineTo(sx + bh, y);
         }
       }
@@ -1126,27 +1379,39 @@
       g.restore();
 
       const flick = !still && ((now / 170) | 0) % 2 === 0;
-      const main = tiny || w < 300 ? 'KEY ROTATION' : 'KEY ROTATION DETECTED';
+      const fpx = (oneLine ? 9 : 10) * k;
+      const lsp = (oneLine ? 1.4 : 2.2) * k;
       const drop = `−${rotDrop.toFixed(1)}%`;
-      g.font = `700 ${tiny ? 9 : 10}px ${UI}`;
-      ls(g, tiny ? 1.4 : 2.2);
-      const mw = g.measureText(main).width;
-      g.font = `500 ${tiny ? 9 : 10}px ${MONO}`;
+      g.font = `500 ${fpx}px ${MONO}`;
       ls(g, 0);
       const dw = g.measureText(drop).width;
-      const total = mw + 10 + dw;
+      // the longest wording that clears the stripe caps; the drop figure goes first when nothing does
+      const room = x1 - x0 - 2 * (hz + 6);
+      g.font = `700 ${fpx}px ${UI}`;
+      ls(g, lsp);
+      let main = 'ROTATION';
+      let showDrop = false;
+      for (const cand of ['KEY ROTATION DETECTED', 'KEY ROTATION', 'ROTATION']) {
+        if (g.measureText(cand).width + 10 + dw <= room) {
+          main = cand;
+          showDrop = true;
+          break;
+        }
+      }
+      if (!showDrop) main = ['KEY ROTATION', 'ROTATION'].find((c) => g.measureText(c).width <= room) || 'ROTATION';
+      const mw = g.measureText(main).width;
+      const total = mw + (showDrop ? 10 + dw : 0);
       let x = Math.round(w / 2 - total / 2);
-      // warning triangle
       g.fillStyle = flick ? C.ice : C.threat;
-      g.font = `700 ${tiny ? 9 : 10}px ${UI}`;
-      ls(g, tiny ? 1.4 : 2.2);
       g.textBaseline = 'middle';
       g.fillText(main, x, y + bh / 2 + 0.5);
       ls(g, 0);
-      x += mw + 10;
-      g.font = `500 ${tiny ? 9 : 10}px ${MONO}`;
-      g.fillStyle = C.amber;
-      g.fillText(drop, x, y + bh / 2 + 0.5);
+      if (showDrop) {
+        x += mw + 10;
+        g.font = `500 ${fpx}px ${MONO}`;
+        g.fillStyle = C.amber;
+        g.fillText(drop, x, y + bh / 2 + 0.5);
+      }
       g.restore();
     }
 
@@ -1171,13 +1436,18 @@
     }
 
     function resize(w, h) {
-      if (w < 40 || h < 40) return;
+      if (w < 40 || h < 40) {
+        // a sliver mid-drag: stop drawing (tick bails without L) until there is a body again
+        L = null;
+        return;
+      }
       const prevN = n;
       L = layout(w, h);
       place();
+      fitHead();
       buildAtlas();
       drawStatic();
-      if (L.cols * L.rows !== prevN) initCells();
+      if (L.cols * L.rows !== prevN) initCells(true);
       if (L.dumpOn) refillDump();
       if (stamp && mode !== 'crack') buildStamp();
     }

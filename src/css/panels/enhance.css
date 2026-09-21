@@ -16,7 +16,7 @@
 [data-panel="enhance"] .enh-fx::before {
   content: "";
   position: absolute;
-  inset: 5px 5px 27px;
+  inset: 5px 5px calc(22px * var(--enh-k, 1) + 5px);
   opacity: 0.8;
   background:
     linear-gradient(var(--holo), var(--holo)) left top / 16px 1px no-repeat,
@@ -49,10 +49,15 @@
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  container-type: inline-size;
+  container-type: size;
   font: 500 9.5px/1 var(--f-mono);
   color: var(--text);
 }
+/* the HUD grows a notch on very large bodies (--enh-k is set from JS, which scales its strip sizes to match) */
+[data-panel="enhance"] .enh-top,
+[data-panel="enhance"] .enh-proc,
+[data-panel="enhance"] .enh-final,
+[data-panel="enhance"] .enh-bot { zoom: var(--enh-k, 1); }
 
 /* ---- header strip: camera + location / REC + clock */
 [data-panel="enhance"] .enh-top {
@@ -159,6 +164,10 @@
   letter-spacing: 0.02em;
 }
 [data-panel="enhance"] .enh-fl1 b { font-weight: 700; color: var(--ice); }
+[data-panel="enhance"] .enh-f-sep { font-style: normal; }
+/* beside the plate on a short strip: the verdict wraps by segment instead of truncating */
+[data-panel="enhance"] .enh-final.is-side .enh-fl1 { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px 10px; }
+[data-panel="enhance"] .enh-final.is-side .enh-f-sep { display: none; }
 [data-panel="enhance"] .enh-fl1 em { font-style: normal; font-weight: 700; color: var(--threat); }
 [data-panel="enhance"] .enh-fl2 {
   max-width: 100%;
@@ -189,6 +198,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
   font: 700 10px/1 var(--f-ui);
   letter-spacing: 0.2em;
   color: var(--holo);
@@ -242,8 +252,13 @@
 [data-panel="enhance"] .enh-btn { isolation: isolate; }
 
 /* ---- compact sizes: drop secondary readouts rather than shrink text */
+@container (max-width: 445px) {
+  [data-panel="enhance"] .enh-kv-res { display: none; }
+}
+@container (max-width: 365px) {
+  [data-panel="enhance"] .enh-kv i { display: none; }
+}
 @container (max-width: 400px) {
-  [data-panel="enhance"] .enh-kv-res,
   [data-panel="enhance"] .enh-tag,
   [data-panel="enhance"] .enh-pr-x { display: none; }
   [data-panel="enhance"] .enh-proc { width: 172px; top: 40px; gap: 4px; padding: 6px 8px 7px; }
@@ -255,6 +270,28 @@
   [data-panel="enhance"] .enh-pr-res { display: none; }
   [data-panel="enhance"] .enh-proc { width: 164px; }
   [data-panel="enhance"] .enh-kv i { display: none; }
+}
+/* narrow status strip: the state word and the button, nothing that could run into them */
+@container (max-width: 300px) {
+  [data-panel="enhance"] .enh-kv-snr { display: none; }
+}
+@container (max-width: 250px) {
+  [data-panel="enhance"] .enh-kv,
+  [data-panel="enhance"] .enh-f-pl,
+  [data-panel="enhance"] .enh-f-pl + .enh-f-sep { display: none; }
+  [data-panel="enhance"] .enh-st { letter-spacing: 0.14em; }
+  [data-panel="enhance"] .enh-btn { padding: 0 7px; letter-spacing: 0.1em; }
+}
+/* short bodies: the readout block keeps its headline rows */
+@container (max-height: 260px) {
+  [data-panel="enhance"] .enh-pr-x { display: none; }
+}
+@container (max-height: 200px) {
+  [data-panel="enhance"] .enh-pr-res { display: none; }
+}
+@container (max-height: 150px) {
+  [data-panel="enhance"] .enh-proc .enh-pr:not(.enh-pr-main) { display: none; }
+  [data-panel="enhance"] .enh-final.is-side .enh-fl2 { display: none; }
 }
 
 html.is-still [data-panel="enhance"] .enh-rec-l i { animation: none; }

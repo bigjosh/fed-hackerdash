@@ -82,8 +82,9 @@
       const a = lat * D2R, b = lon * D2R, ca = Math.cos(a);
       return { x: ca * Math.sin(b), y: Math.sin(a), z: ca * Math.cos(b) };
     }
-    // land points
+    // land points; big globes use a 2x2 subdivision of every cell so the continents stay dense
     const landPts = [];
+    const landFine = [];
     for (const rowKey in LAND) {
       const row = +rowKey;
       const lat = 90 - row * 5 - 2.5;
@@ -91,8 +92,17 @@
         for (let c = s; c <= e; c++) {
           const lon = -180 + c * 5 + 2.5;
           landPts.push(ll2v(lat, lon));
+          for (const dl of [-1.25, 1.25]) for (const dn of [-1.25, 1.25]) landFine.push(ll2v(lat + dl, lon + dn));
         }
       }
+    }
+    // land dot colours by quantised alpha: no per-dot string building
+    const LV = 24;
+    const lutIce = [];
+    const lutHolo = [];
+    for (let i = 0; i < LV; i++) {
+      lutIce.push(ctx.rgba('ice', i / (LV - 1)));
+      lutHolo.push(ctx.rgba('holo', i / (LV - 1)));
     }
     // graticule: parallels every 30, meridians every 30, sampled
     const grat = [];
@@ -123,6 +133,19 @@
     const pulses = []; // {vec, t}
     let layout = 'tall';
     let started = false;
+    let k = 1; // UI scale for big panels (text, bars)
+    let gk = 1; // globe marker scale, from the globe radius
+    let cols = false; // very wide strip: list and RTT side by side
+    let totalLat = 1; // sum of every hop latency in the chain (origin level of the RTT history)
+    // cumulative-RTT history, sampled every 100 ms (ring buffer)
+    const HIST = 256;
+    const hist = new Float32Array(HIST);
+    let histHead = 0;
+    let histCount = 0;
+    let histAcc = 0;
+    for (let i = 0; i < HIST; i++) hist[i] = 2 + Math.abs(Math.sin(i * 0.7)) * 3;
+    histHead = 0;
+    histCount = HIST;
 
     const DUR = { arc: 1500, dwell: 480, lock: 3200, fade: 1400, idle: 1400 };
     const spd = () => (fast ? 2 : 1) * (urgent ? 1.35 : 1) * (ctx.reducedMotion ? 0.8 : 1);
@@ -151,6 +174,7 @@
       chain = ROUTE.map((c, i) => mkHop(c, i));
       chain.push(mkHop(ORIGIN, ROUTE.length));
       N = chain.length;
+      sumLat();
       segs = [];
       for (let i = 1; i < N; i++) segs.push(slerp(chain[i - 1].vec, chain[i].vec, 22));
       locked = 1;
@@ -172,9 +196,16 @@
       const idx = locked; // 0-based index being travelled to
       if (idx >= N - 1) return;
       chain[idx] = mkHop(chain[idx], idx);
+      sumLat();
       arcT = 0;
       updateRows();
       ctx.alert('warn', `HOP ${idx + 1} LOST — RE-ESTABLISHING ${chain[idx].name} RELAY`);
+    }
+
+    function sumLat() {
+      totalLat = 0;
+      for (let i = 0; i < N; i++) totalLat += chain[i].latency;
+      totalLat = Math.max(1, totalLat);
     }
 
     function emitHop(i) {
@@ -211,11 +242,34 @@
           (isTarget ? ' is-target' : '') +
           ((done || reachedAll) ? ' is-done' : cur ? ' is-cur' : ' is-pending');
       }
-      // keep the current row scrolled into view (cheap: transform via scrollTop)
-      const curRow = rows[Math.min(locked, N - 1)];
-      if (curRow && listEl.scrollHeight > listEl.clientHeight + 2) {
-        const top = curRow.el.offsetTop - listEl.clientHeight * 0.5;
-        listEl.scrollTop = Math.max(0, top);
+      scrollRows();
+    }
+
+    // When the list cannot show every hop, keep the current one (and the next) in view: fold away
+    // whole rows above it and hide a row the bottom edge would cut, so no row is ever sliced in
+    // half. Layout reads: runs on hop changes and resizes only, never per frame.
+    const clipFlags = [];
+    function scrollRows() {
+      if (!N || !rows[0]) return;
+      for (let i = 0; i < N; i++) rows[i].el.classList.remove('is-gone', 'is-clip');
+      listEl.scrollTop = 0;
+      if (listEl.scrollHeight <= listEl.clientHeight + 1) return;
+      const t0 = rows[0].el.offsetTop;
+      const avail = listEl.clientHeight - Math.max(0, t0 - listEl.offsetTop - listEl.clientTop);
+      const ci = Math.min(locked, N - 1);
+      const ti = Math.min(ci + 1, N - 1);
+      const bottom = rows[ti].el.offsetTop + rows[ti].el.offsetHeight - t0;
+      let f = 0;
+      while (f < ci && bottom - (rows[f].el.offsetTop - t0) > avail) f++;
+      const shift = rows[f].el.offsetTop - t0;
+      // measure everything first, then write (no read-after-write thrash)
+      for (let i = 0; i < N; i++) {
+        const r = rows[i].el;
+        clipFlags[i] = i < f ? 1 : r.offsetTop - t0 + r.offsetHeight - shift > avail + 1 ? 2 : 0;
+      }
+      for (let i = 0; i < N; i++) {
+        if (clipFlags[i] === 1) rows[i].el.classList.add('is-gone');
+        else if (clipFlags[i] === 2) rows[i].el.classList.add('is-clip');
       }
     }
 
@@ -271,6 +325,7 @@
       const gw = cv.w, gh = cv.h;
       // leave room outside the limb for the bezel ticks
       cx = gw / 2; cy = gh / 2; R = Math.min(gw, gh) * (Math.min(gw, gh) > 110 ? 0.42 : 0.45);
+      gk = U.clamp(R / 110, 1, 2.2);
       const cosY = Math.cos(yaw), sinY = Math.sin(yaw), cosP = Math.cos(pitch), sinP = Math.sin(pitch);
 
       // globe disc + limb
@@ -283,14 +338,14 @@
       g.strokeStyle = ctx.rgba('holo', 0.5); g.lineWidth = 1;
       g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.stroke();
       g.strokeStyle = ctx.rgba(urgent ? 'threat' : 'holo', urgent ? 0.3 : 0.12);
-      g.beginPath(); g.arc(cx, cy, R + 2.5, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.arc(cx, cy, R + 2.5 * gk, 0, Math.PI * 2); g.stroke();
       // outer bezel: rotating tick ring gives the globe instrument chrome
-      if (R + 8.5 < Math.min(gw, gh) / 2) {
-        const ticks = 48, r0 = R + 4, spin = ctx.reducedMotion ? 0 : yaw * 0.5;
+      if (R + 8.5 * gk < Math.min(gw, gh) / 2) {
+        const ticks = R > 160 ? 96 : 48, major = ticks / 8, r0 = R + 4 * gk, spin = ctx.reducedMotion ? 0 : yaw * 0.5;
         g.strokeStyle = ctx.rgba('holo2', 0.35);
         g.beginPath();
         for (let i = 0; i < ticks; i++) {
-          const a = spin + (i / ticks) * Math.PI * 2, len = i % 6 === 0 ? 4 : 2;
+          const a = spin + (i / ticks) * Math.PI * 2, len = (i % major === 0 ? 4 : 2) * gk;
           const ca = Math.cos(a), sa = Math.sin(a);
           g.moveTo(cx + ca * r0, cy + sa * r0);
           g.lineTo(cx + ca * (r0 + len), cy + sa * (r0 + len));
@@ -313,14 +368,23 @@
       }
 
       // land dots — brighter than the grid, strong limb darkening for roundness
-      const big = R > 90;
-      for (const v of landPts) {
-        const p = project(v, cosY, sinY, cosP, sinP);
-        if (p.z <= 0.05) continue;
-        const a = Math.pow(p.z, 0.7) * 0.85 + 0.12;
-        g.fillStyle = ctx.rgba(p.z > 0.6 ? 'ice' : 'holo', a * alpha);
-        const s = big ? (p.z > 0.55 ? 2 : 1.5) : (p.z > 0.55 ? 1.5 : 1.1);
-        g.fillRect(p.x - s / 2, p.y - s / 2, s, s);
+      // (projection inlined: no per-dot allocation)
+      const fine = R > 230;
+      const pts = fine ? landFine : landPts;
+      const dsc = fine ? gk * 0.75 : gk;
+      const sBig = (R > 90 ? 2 : 1.5) * dsc, sSmall = (R > 90 ? 1.5 : 1.1) * dsc;
+      for (let i = 0; i < pts.length; i++) {
+        const v = pts[i];
+        const z1 = -v.x * sinY + v.z * cosY;
+        const z2 = v.y * sinP + z1 * cosP;
+        if (z2 <= 0.05) continue;
+        const li = Math.round((Math.pow(z2, 0.7) * 0.85 + 0.12) * alpha * (LV - 1));
+        if (li <= 0) continue;
+        const x1 = v.x * cosY + v.z * sinY;
+        const y2 = v.y * cosP - z1 * sinP;
+        const s = z2 > 0.55 ? sBig : sSmall;
+        g.fillStyle = (z2 > 0.6 ? lutIce : lutHolo)[li];
+        g.fillRect(cx + R * x1 - s / 2, cy - R * y2 - s / 2, s, s);
       }
 
       // arcs
@@ -342,10 +406,10 @@
         const isT = i === N - 1;
         const col = isT ? 'threat' : reached ? 'ice' : 'holo';
         g.fillStyle = ctx.rgba(col, (reached ? 0.95 : 0.4) * alpha);
-        g.beginPath(); g.arc(p.x, p.y, isT ? 2.6 : 1.8, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(p.x, p.y, (isT ? 2.6 : 1.8) * gk, 0, Math.PI * 2); g.fill();
         if (reached && !isT) {
           g.strokeStyle = ctx.rgba('holo', 0.5 * alpha); g.lineWidth = 1;
-          g.beginPath(); g.arc(p.x, p.y, 3.4, 0, Math.PI * 2); g.stroke();
+          g.beginPath(); g.arc(p.x, p.y, 3.4 * gk, 0, Math.PI * 2); g.stroke();
         }
       }
 
@@ -355,7 +419,7 @@
         if (p.z <= 0.02) continue;
         const t = pl.t / 900;
         g.strokeStyle = ctx.rgba('holo', (1 - t) * 0.8 * alpha); g.lineWidth = 1;
-        g.beginPath(); g.arc(p.x, p.y, 3 + t * 10, 0, Math.PI * 2); g.stroke();
+        g.beginPath(); g.arc(p.x, p.y, (3 + t * 10) * gk, 0, Math.PI * 2); g.stroke();
       }
 
       // current hop label
@@ -363,12 +427,13 @@
         const h = chain[Math.min(locked, N - 1)];
         const p = project(h.vec, cosY, sinY, cosP, sinP);
         if (p.z > 0.02) {
-          g.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+          const fz = Math.round(Math.min(15, 9 * gk));
+          g.font = `600 ${fz}px "Chakra Petch", "Segoe UI", sans-serif`;
           g.textAlign = 'left'; g.textBaseline = 'middle';
-          const tx = p.x + 6, label = h.name;
+          const tx = p.x + 6 * gk, label = h.name;
           const tw = g.measureText(label).width;
-          const bx = tx + tw > cv.w - 2 ? p.x - 6 - tw : tx;
-          g.fillStyle = ctx.rgba('bg', 0.6); g.fillRect(bx - 2, p.y - 6, tw + 4, 12);
+          const bx = tx + tw > cv.w - 2 ? Math.max(2, p.x - 6 * gk - tw) : tx;
+          g.fillStyle = ctx.rgba('bg', 0.6); g.fillRect(bx - 2, p.y - fz * 0.67, tw + 4, fz * 1.34);
           g.fillStyle = ctx.rgba('holo', 0.95); g.fillText(label, bx, p.y);
         }
       }
@@ -378,8 +443,8 @@
         const seg = segs[locked - 1];
         const s = seg[Math.min(seg.length - 1, Math.round(arcT * (seg.length - 1)))];
         const p = project(s, cosY, sinY, cosP, sinP, 1 + 0.12 * Math.sin(arcT * Math.PI));
-        g.strokeStyle = ctx.rgba('threat', 0.95); g.lineWidth = 1.6;
-        const d = 4;
+        g.strokeStyle = ctx.rgba('threat', 0.95); g.lineWidth = 1.6 * Math.min(gk, 1.6);
+        const d = 4 * gk;
         g.beginPath(); g.moveTo(p.x - d, p.y - d); g.lineTo(p.x + d, p.y + d); g.moveTo(p.x + d, p.y - d); g.lineTo(p.x - d, p.y + d); g.stroke();
       }
 
@@ -388,15 +453,16 @@
         const p = project(chain[N - 1].vec, cosY, sinY, cosP, sinP);
         if (p.z > -0.2) {
           const pu = ctx.reducedMotion ? 0.5 : (phaseT % 900) / 900;
+          const q = gk, lw = Math.min(gk, 1.6);
           g.save();
           g.shadowBlur = 8; g.shadowColor = ctx.color.threat;
-          g.strokeStyle = ctx.rgba('threat', (0.9 - pu * 0.6) * alpha); g.lineWidth = 1.6;
-          g.beginPath(); g.arc(p.x, p.y, 6 + pu * 12, 0, Math.PI * 2); g.stroke();
-          g.strokeStyle = ctx.rgba('threat', 0.9 * alpha); g.lineWidth = 1.4;
-          g.beginPath(); g.arc(p.x, p.y, 6, 0, Math.PI * 2); g.stroke();
+          g.strokeStyle = ctx.rgba('threat', (0.9 - pu * 0.6) * alpha); g.lineWidth = 1.6 * lw;
+          g.beginPath(); g.arc(p.x, p.y, (6 + pu * 12) * q, 0, Math.PI * 2); g.stroke();
+          g.strokeStyle = ctx.rgba('threat', 0.9 * alpha); g.lineWidth = 1.4 * lw;
+          g.beginPath(); g.arc(p.x, p.y, 6 * q, 0, Math.PI * 2); g.stroke();
           // crosshair
-          g.beginPath(); g.moveTo(p.x - 10, p.y); g.lineTo(p.x - 4, p.y); g.moveTo(p.x + 4, p.y); g.lineTo(p.x + 10, p.y);
-          g.moveTo(p.x, p.y - 10); g.lineTo(p.x, p.y - 4); g.moveTo(p.x, p.y + 4); g.lineTo(p.x, p.y + 10); g.stroke();
+          g.beginPath(); g.moveTo(p.x - 10 * q, p.y); g.lineTo(p.x - 4 * q, p.y); g.moveTo(p.x + 4 * q, p.y); g.lineTo(p.x + 10 * q, p.y);
+          g.moveTo(p.x, p.y - 10 * q); g.lineTo(p.x, p.y - 4 * q); g.moveTo(p.x, p.y + 4 * q); g.lineTo(p.x, p.y + 10 * q); g.stroke();
           g.restore();
           if (layout !== 'mini') drawLockPlate();
         }
@@ -414,11 +480,12 @@
     // "ORIGIN LOCATED" stamp on a plate over the lower globe, with coordinates when there is room
     function drawLockPlate() {
       const two = R > 50;
-      const ph = two ? 25 : 14;
-      g.font = '700 9px "Chakra Petch", "Segoe UI", sans-serif';
-      try { g.letterSpacing = '1.4px'; } catch (e) { /* older canvas: no tracking */ }
+      const fz = Math.round(Math.min(16, 9 * gk));
+      const ph = two ? Math.round(fz * 2.8) : fz + 5;
+      g.font = `700 ${fz}px "Chakra Petch", "Segoe UI", sans-serif`;
+      try { g.letterSpacing = ((1.4 * fz) / 9).toFixed(1) + 'px'; } catch (e) { /* older canvas: no tracking */ }
       const tw = g.measureText('ORIGIN LOCATED').width;
-      const pw = Math.min(cv.w - 4, tw + 12);
+      const pw = Math.min(cv.w - 4, tw + (12 * fz) / 9);
       const px = cx - pw / 2, py = Math.min(cy + R * 0.5, cv.h - ph - 2);
       g.fillStyle = ctx.rgba('bg', 0.82 * alpha);
       g.fillRect(px, py, pw, ph);
@@ -426,54 +493,76 @@
       g.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
       g.fillStyle = ctx.rgba('threat', alpha);
       g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText('ORIGIN LOCATED', cx + 0.7, py + 7.5);
+      g.fillText('ORIGIN LOCATED', cx + 0.7, py + (two ? fz * 0.83 : ph / 2 + 0.5));
       try { g.letterSpacing = '0px'; } catch (e) { /* see above */ }
       if (two) {
-        g.font = '500 9px "JetBrains Mono", Consolas, monospace';
+        g.font = `500 ${fz}px "JetBrains Mono", Consolas, monospace`;
         g.fillStyle = ctx.rgba('ice', 0.9 * alpha);
-        g.fillText(`${ORIGIN.lat.toFixed(3)}N ${ORIGIN.lon.toFixed(3)}E`, cx, py + 18);
+        g.fillText(`${ORIGIN.lat.toFixed(3)}N ${ORIGIN.lon.toFixed(3)}E`, cx, py + fz * 2);
       }
     }
 
     // RTT strip: one bar per hop. Done hops hold their latency, the hop being probed jitters
     // until it answers, pending hops are empty slots, PARIS is red.
+    // Tall strips split: per-hop bars on top, the cumulative-RTT history fills the rest.
+    const UIF = (px) => `600 ${px}px "Chakra Petch", "Segoe UI", sans-serif`;
+    const MONOF = (px) => `500 ${px}px "JetBrains Mono", Consolas, monospace`;
     function drawRtt() {
       const w = rcv.w, h = rcv.h;
       rcv.clear();
       if (h < 14 || !N) return;
+      const ox = cols ? 12 : 0; // side-by-side with the list: a rule and some air on the left
+      if (cols) {
+        rg.strokeStyle = ctx.rgba('holo', 0.14); rg.lineWidth = 1;
+        rg.beginPath(); rg.moveTo(0.5, 0); rg.lineTo(0.5, h); rg.stroke();
+      }
+      const fz = Math.round(9 * k);
+      const split = h >= 150 * Math.min(k, 1.3) && w - ox >= 90;
+      const barH = split ? Math.round(Math.min(h * 0.42, 100 * k + 30)) : h;
+      drawBars(ox, 0, w - ox, barH, fz);
+      if (split) drawHist(ox, barH + Math.round(8 * k), w - ox, h, fz);
+    }
+
+    function drawBars(ox, oy, w, h, fz) {
       // short strip: one line, label left, sum right, bars in between
-      const compact = h < 34;
+      const compact = h < 34 * k;
       const reachedAll = phase === 'lock' || phase === 'fade' || phase === 'idle';
       let maxL = 1, sum = 0;
       for (let i = 0; i < N; i++) {
         maxL = Math.max(maxL, chain[i].latency);
         if (i < locked || reachedAll) sum += chain[i].latency;
       }
-      const ly = compact ? h / 2 + 0.5 : 1;
+      const ly = oy + (compact ? h / 2 + 0.5 : 1);
       rg.textBaseline = compact ? 'middle' : 'top';
-      rg.font = '600 9px "Chakra Petch", "Segoe UI", sans-serif';
+      rg.font = UIF(fz);
       rg.textAlign = 'left';
       rg.fillStyle = ctx.rgba('dim', 1);
       const lab = w < 120 || compact ? 'RTT' : 'RTT / HOP';
-      rg.fillText(lab, 1, ly);
+      rg.fillText(lab, ox + 1, ly);
       const labW = compact ? rg.measureText(lab).width + 6 : 0;
-      rg.font = '500 9px "JetBrains Mono", Consolas, monospace';
+      rg.font = MONOF(fz);
       rg.textAlign = 'right';
       rg.fillStyle = ctx.rgba(reachedAll ? 'threat' : 'holo', 0.9);
       const sumTxt = (w < 120 ? '' : 'Σ ') + sum + 'ms';
-      rg.fillText(sumTxt, w - 1, ly);
+      rg.fillText(sumTxt, ox + w - 1, ly);
       const sumW = compact ? rg.measureText(sumTxt).width + 6 : 0;
 
-      const top = compact ? 4 : 14, base = h - 2, span = base - top;
-      const x0 = 1 + labW, bwAll = w - 2 - labW - sumW;
-      if (bwAll < N * 2) return;
-      const gap = compact ? 1 : 2, bw = Math.max(1, (bwAll - gap * (N - 1)) / N);
+      // roomy strips get hop numbers under the bars and latencies over them
+      const tags = !compact && h >= 70 * k;
+      const top = oy + (compact ? 4 : fz + 5 + (tags ? fz + 2 : 0)), base = oy + h - 2 - (tags ? fz + 3 : 0), span = base - top;
+      const x0 = ox + 1 + labW, bwAll = w - 2 - labW - sumW;
+      if (bwAll < N * 2 || span < 2) return;
+      // bars never get chunkier than ~64px: wide strips spread them out instead
+      let bw = Math.max(1, (bwAll - (compact ? 1 : 2) * (N - 1)) / N);
+      bw = Math.min(bw, 64 * k);
+      const gap = N > 1 ? (bwAll - bw * N) / (N - 1) : 0;
       // quarter grid lines
       rg.strokeStyle = ctx.rgba('faint', 0.8);
       rg.lineWidth = 1;
       rg.beginPath();
-      for (let k = 1; k < 4; k++) { const y = Math.round(top + (span * k) / 4) + 0.5; rg.moveTo(x0, y); rg.lineTo(x0 + bwAll, y); }
+      for (let q = 1; q < 4; q++) { const y = Math.round(top + (span * q) / 4) + 0.5; rg.moveTo(x0, y); rg.lineTo(x0 + bwAll, y); }
       rg.stroke();
+      const vals = tags && bw >= fz * 0.6 * 3 + 2;
       for (let i = 0; i < N; i++) {
         const x = x0 + i * (bw + gap);
         const done = i < locked || reachedAll, cur = !done && i === locked;
@@ -485,15 +574,103 @@
         rg.fillStyle = ctx.rgba(col, done ? 0.75 * Math.max(alpha, 0.4) : cur ? 0.9 : 1);
         rg.fillRect(x, base - bh, bw, bh);
         if (done) { rg.fillStyle = ctx.rgba(isT ? 'threat' : 'holo', 0.95); rg.fillRect(x, base - bh, bw, 1); }
+        if (tags) {
+          rg.font = MONOF(fz);
+          rg.textAlign = 'center';
+          rg.textBaseline = 'top';
+          rg.fillStyle = ctx.rgba(isT ? 'threat' : cur ? 'ice' : 'dim', done || cur ? 0.9 : 0.5);
+          rg.fillText(U.pad(i + 1), x + bw / 2, base + 3);
+          if (vals && done) {
+            rg.textBaseline = 'bottom';
+            rg.fillStyle = ctx.rgba(isT ? 'threat' : 'text', 0.85);
+            rg.fillText(String(chain[i].latency), x + bw / 2, base - bh - 2);
+          }
+        }
       }
       rg.strokeStyle = ctx.rgba('holo', 0.35);
       rg.beginPath(); rg.moveTo(x0, base + 0.5); rg.lineTo(x0 + bwAll, base + 0.5); rg.stroke();
     }
 
+    function drawHist(ox, y0, w, y1, fz) {
+      if (y1 - y0 < 40) return;
+      const reachedAll = phase === 'lock' || phase === 'fade' || phase === 'idle';
+      rg.strokeStyle = ctx.rgba('faint', 0.9); rg.lineWidth = 1;
+      rg.beginPath(); rg.moveTo(ox, Math.round(y0) + 0.5); rg.lineTo(ox + w, Math.round(y0) + 0.5); rg.stroke();
+      rg.textBaseline = 'top';
+      rg.font = UIF(fz);
+      rg.textAlign = 'left';
+      rg.fillStyle = ctx.rgba('dim', 1);
+      rg.fillText(w < 150 ? 'Σ RTT' : 'CUMULATIVE RTT · LIVE', ox + 1, y0 + 4);
+      rg.font = MONOF(fz);
+      rg.textAlign = 'right';
+      rg.fillStyle = ctx.rgba(reachedAll ? 'threat' : 'ice', 0.9);
+      rg.fillText(Math.round(hist[(histHead + HIST - 1) % HIST]) + 'ms', ox + w - 1, y0 + 4);
+      const top = y0 + fz + 12, bot = y1 - 2, span = bot - top;
+      if (span < 16) return;
+      const x0 = ox + 1, pw = w - 2;
+      rg.strokeStyle = ctx.rgba('faint', 0.8);
+      rg.beginPath();
+      for (let q = 1; q < 4; q++) { const y = Math.round(top + (span * q) / 4) + 0.5; rg.moveTo(x0, y); rg.lineTo(x0 + pw, y); }
+      rg.stroke();
+      // the origin level: the chain's full round trip
+      const vmax = totalLat * 1.15;
+      const oyL = Math.round(bot - (totalLat / vmax) * span) + 0.5;
+      rg.strokeStyle = ctx.rgba('threat', 0.4);
+      rg.setLineDash([3, 3]);
+      rg.beginPath(); rg.moveTo(x0, oyL); rg.lineTo(x0 + pw, oyL); rg.stroke();
+      rg.setLineDash([]);
+      rg.font = UIF(fz);
+      rg.textAlign = 'left'; rg.textBaseline = 'bottom';
+      rg.fillStyle = ctx.rgba('threat', 0.75);
+      rg.fillText('ORIGIN', x0 + 2, oyL - 2);
+      // newest sample at the right edge; ~3px per sample
+      const n = Math.min(HIST, Math.max(8, Math.floor(pw / 3)));
+      const step = pw / (n - 1);
+      rg.strokeStyle = ctx.rgba('dim', 0.6);
+      rg.beginPath();
+      for (let j = 0; j < n; j++) {
+        if ((histCount - n + j) % 10) continue; // scrolling 1 s ticks
+        const x = Math.round(x0 + pw - (n - 1 - j) * step) + 0.5;
+        rg.moveTo(x, bot); rg.lineTo(x, bot - 3);
+      }
+      rg.stroke();
+      const col = reachedAll ? 'threat' : 'holo';
+      rg.beginPath();
+      let lx = 0, lyv = 0;
+      for (let j = 0; j < n; j++) {
+        const v = hist[(histHead - n + j + HIST) % HIST];
+        lx = x0 + pw - (n - 1 - j) * step;
+        lyv = bot - U.clamp(v / vmax, 0, 1) * span;
+        if (j) rg.lineTo(lx, lyv); else rg.moveTo(lx, lyv);
+      }
+      rg.strokeStyle = ctx.rgba(col, 0.85); rg.lineWidth = 1.2;
+      rg.stroke();
+      rg.lineTo(x0 + pw, bot); rg.lineTo(x0, bot); rg.closePath();
+      rg.fillStyle = ctx.rgba(col, 0.08);
+      rg.fill();
+      rg.lineWidth = 1;
+      rg.fillStyle = ctx.rgba('ice', 0.95);
+      rg.fillRect(lx - 1.5, lyv - 1.5, 3, 3);
+    }
+
+    // running round trip to the hop frontier; the probed hop jitters until it answers
+    function sampleRtt() {
+      if (phase === 'idle') return 2 + Math.random() * 3;
+      const reachedAll = phase === 'lock' || phase === 'fade';
+      let s = 0;
+      for (let i = 0; i < N; i++) if (i < locked || reachedAll) s += chain[i].latency;
+      if (phase === 'fade') return Math.max(2, s * alpha) + Math.random() * 2;
+      if (!reachedAll && locked < N) {
+        const cur = chain[locked].latency;
+        s += phase === 'dwell' ? cur : cur * (0.35 + 0.5 * Math.abs(Math.sin(phaseT * 0.011 + locked)));
+      }
+      return s + (Math.random() - 0.5) * 4;
+    }
+
     function drawArc(seg, upto, cosY, sinY, cosP, sinP, isFinal) {
       const col = isFinal ? 'threat' : 'holo';
       g.strokeStyle = ctx.rgba(col, 0.75 * alpha);
-      g.lineWidth = 1.4;
+      g.lineWidth = 1.4 * Math.min(gk, 1.8);
       g.beginPath();
       let pen = false, headP = null;
       for (const s of seg) {
@@ -510,7 +687,7 @@
         g.save();
         g.shadowBlur = 6; g.shadowColor = ctx.color[col === 'threat' ? 'threat' : 'holo'];
         g.fillStyle = ctx.rgba('ice', alpha);
-        g.beginPath(); g.arc(headP.x, headP.y, 1.8, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(headP.x, headP.y, 1.8 * gk, 0, Math.PI * 2); g.fill();
         g.restore();
       }
     }
@@ -557,28 +734,67 @@
       if (ctx.audio) ctx.audio.chirp(300, 1200, 400, 'sine', 0.04);
     }
 
+    // Layout per size: pick the arrangement, the UI scale and the globe box, then make sure every
+    // hop row fits (shrink the globe a little, then fold the address lines). Layout reads here are
+    // fine: this runs on resize and font load only.
+    function setGlobe(px) {
+      globeEl.style.width = px + 'px';
+      globeEl.style.height = px + 'px';
+    }
+    const listOver = () => listEl.scrollHeight - listEl.clientHeight;
+    function relayout(w, h) {
+      if (!w || !h) return;
+      const F = ctx.frame;
+      layout = w < 120 ? 'mini' : w / h > 1.05 ? 'wide' : 'tall';
+      F.classList.toggle('is-wide', layout === 'wide');
+      F.classList.toggle('is-mini', layout === 'mini');
+      // square the globe box so the canvas is round
+      let gsz = Math.floor(layout === 'wide' ? Math.min(h - 8, w * 0.5) : layout === 'mini' ? Math.min(w - 4, h * 0.34) : Math.min(w - 8, h * 0.44));
+      const sideW = layout === 'wide' ? w - gsz - 12 : w - 8;
+      const sideH = layout === 'wide' ? h - 8 : h - gsz - 12;
+      k = layout === 'mini' ? 1 : U.clamp(Math.min(sideW / 300, sideH / 260), 1, 1.6);
+      cols = layout === 'wide' && sideW >= 620 && sideW / sideH > 1.5;
+      root.style.setProperty('--tr-k', k.toFixed(3));
+      F.classList.toggle('is-cols', cols);
+      F.classList.remove('is-compact');
+      setGlobe(gsz);
+      let over = listOver();
+      if (over > 1 && layout !== 'wide') {
+        const min = Math.floor(layout === 'mini' ? Math.min(w - 4, h * 0.26) : Math.min(w - 8, h * 0.3));
+        const g2 = Math.max(min, gsz - Math.ceil(over));
+        if (g2 < gsz) {
+          gsz = g2;
+          setGlobe(gsz);
+          over = listOver();
+        }
+      }
+      if (over > 1) F.classList.add('is-compact');
+      // core fitted the canvases to the old boxes before calling us; refit or the globe is stretched
+      cv.fit();
+      scrollRows();
+      rcv.fit(); // after the rows settle: the strip only gets the height the list leaves over
+    }
+    ctx.on('fonts:ready', () => relayout(ctx.width, ctx.height));
+
     return {
       fps: 40,
       resize(w, h) {
-        const aspect = w / h;
-        layout = w < 120 ? 'mini' : aspect > 1.05 ? 'wide' : 'tall';
-        ctx.frame.classList.toggle('is-wide', layout === 'wide');
-        ctx.frame.classList.toggle('is-mini', layout === 'mini');
-        // square the globe box so the canvas is round
-        const gsz = Math.floor(layout === 'wide' ? Math.min(h - 8, w * 0.5) : layout === 'mini' ? Math.min(w - 4, h * 0.34) : Math.min(w - 8, h * 0.44));
-        globeEl.style.width = gsz + 'px';
-        globeEl.style.height = gsz + 'px';
-        // core fitted the canvases to the old boxes before calling us; refit or the globe is stretched
-        cv.fit();
         if (!started) { started = true; buildChain(); }
+        relayout(w, h);
         setMeta();
         setProgress();
         updateRows();
-        rcv.fit(); // after the rows exist: the strip only gets the height the list leaves over
       },
       tick(now, dt) {
         const ms = dt * 1000 * spd();
         advance(ms);
+        histAcc += dt * 1000;
+        while (histAcc >= 100) {
+          histAcc -= 100;
+          hist[histHead] = sampleRtt();
+          histHead = (histHead + 1) % HIST;
+          histCount++;
+        }
         // rotation easing + gentle idle drift
         // hold PARIS dead-centre while locked, then let the globe idle-spin
         if (phase === 'idle' || phase === 'fade') targetYaw -= (ctx.reducedMotion ? 0.05 : 0.12) * dt;

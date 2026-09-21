@@ -199,12 +199,50 @@
 [data-panel="spectrum"] .spec-root[data-lay="xs"] .spec-short { display: inline; }
 [data-panel="spectrum"] .spec-root[data-lay="xs"] .spec-vp-s { min-width: 0; max-width: 64px; overflow: hidden; text-overflow: ellipsis; }
 
+/* near full screen (set from JS): the strips around the canvases read at a distance */
+[data-panel="spectrum"] .spec-root.is-lg { gap: 6px; padding: 8px 12px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-top { flex-basis: 20px; gap: 8px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-rec { font-size: 11px; gap: 6px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-rec i { width: 8px; height: 8px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-freq { font-size: 17px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-u,
+[data-panel="spectrum"] .spec-root.is-lg .spec-mod { font-size: 11px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-dbm,
+[data-panel="spectrum"] .spec-root.is-lg .spec-snr { font-size: 13px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-tc { font-size: 12px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-vp { flex-basis: 18px; gap: 10px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-vp-l,
+[data-panel="spectrum"] .spec-root.is-lg .spec-vp-s { font-size: 11px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-vp-v { font-size: 15px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-vp-bar { height: 11px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-tx { flex-basis: 45px; font-size: 15px; line-height: 22px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-ln { height: 22px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-who { font-size: 13px; line-height: 22px; margin-right: 10px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-caret { width: 8px; height: 15px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-jamtx { font-size: 13px; line-height: 22px; }
+[data-panel="spectrum"] .spec-root.is-lg .spec-measure { font-size: 15px; }
+
 @container panel (max-width: 330px) {
   [data-panel="spectrum"] .spec-tc { display: none; }
+}
+@container panel (max-width: 260px) {
+  [data-panel="spectrum"] .spec-long { display: none; }
+  [data-panel="spectrum"] .spec-short { display: inline; }
 }
 @container panel (max-width: 250px) {
   [data-panel="spectrum"] .spec-rec { display: none; }
   [data-panel="spectrum"] .spec-top { gap: 4px; }
+}
+/* the smallest widths keep frequency, level, meter, score and status; the rest goes */
+@container panel (max-width: 200px) {
+  [data-panel="spectrum"] .spec-mod,
+  [data-panel="spectrum"] .spec-mod-s,
+  [data-panel="spectrum"] .spec-snr,
+  [data-panel="spectrum"] .spec-snr-s,
+  [data-panel="spectrum"] .spec-vp-l { display: none; }
+  [data-panel="spectrum"] .spec-vp { gap: 5px; }
+  [data-panel="spectrum"] .spec-vp-bar { min-width: 24px; }
+  [data-panel="spectrum"] .spec-vp-s { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
 
 html.is-still [data-panel="spectrum"] .spec-caret,

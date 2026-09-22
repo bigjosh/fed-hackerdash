@@ -4,6 +4,9 @@ A movie-style hacker dashboard: cyberpunk meets Minority Report. Thirteen live p
 story. NULLSEC's Operation FEDLIGHT is hunting WRAITH through the streets of Paris against a
 countdown to a grid wipe, while handler **Agent Fed** runs the show over a secure uplink.
 
+You can view the live dashboard here:\
+https://bigjosh.github.io/fed-hackerdash/
+
 - **Live Paris map**: real OpenStreetMap streets, the Seine, the Périphérique and all 20
   arrondissements. WRAITH's red dot drives the actual road network while the intercept units
   close in (among them UNIT FEDORA and K-9 KONA).
@@ -52,6 +55,13 @@ python tools/paris_data.py # re-fetch and re-encode the Paris map data (cached i
 `src/js/shell.js` handles the chrome, and `src/css/base.css` the layout and tokens. There is one
 file per panel in `src/js/panels/`, and the shared Paris dataset is `src/js/data/paris.js`. The
 panel API and event catalog are in `CONTRACT.md`.
+
+## Session
+
+The whole project was built in one conversation with Claude Code (Claude Opus 5), from the first
+"Create a hacker dashboard" prompt to shipping. [`session/index.html`](session/index.html) has the
+full session: every prompt, Claude's replies, the tool calls (collapsed), and the screenshots Claude
+checked along the way. You can read it rendered at https://bigjosh.github.io/fed-hackerdash/session/.
 
 ## Attribution
 
